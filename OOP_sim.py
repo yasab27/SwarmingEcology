@@ -8,20 +8,22 @@ from matplotlib import animation
 class colony:
 
     def __init__(self, grid, inoc, c0, r0, width, density, gamma, bN, aC, KN, Cm):
+        # -------------------------- Initialize colony variables ------------------------------
 
         # assign initial condition variables to the colony
-        self.inoc = inoc
-        self.c0 = c0
-        self.r0 = r0
-        self.width = width
-        self.density = density
-        self.crit_R = 1.5 / self.density
-        self.gamma = gamma
-        self.bN = bN
-        self.aC = aC
-        self.KN = KN
-        self.Cm = Cm
-        self.XX, self.YY = grid
+        self.inoc = inoc # starting position
+        self.c0 = c0 # starting cell number
+        self.r0 = r0 # radius of colony initially
+        self.width = width # branch width
+        self.density = density # branch density to be maintained
+        self.crit_R = 1.5 / self.density # distance from other branches at which bifurcation occurs
+        self.gamma = gamma # colony expansion efficiency constant
+        self.bN = bN # uptake rate of nutrients
+        self.aC = aC # energy translation efficiency
+        self.KN = KN # half saturation for nutrient uptake kinetics
+        self.Cm = Cm # half saturation for cell density in monod model
+        self.XX, self.YY = grid # the underlying grid on which the colony sits 
+        # create more dimension variables
         self.nx, self.ny = self.XX.shape[0], self.YY.shape[0]
         self.dx, self.dy = (self.XX[0,-1] - self.XX[0,0])/(self.nx - 1), (self.YY[-1,0] - self.YY[0,0])/(self.ny - 1)
 
@@ -40,36 +42,41 @@ class colony:
         self.rX = np.zeros(ntips0)
         self.rY = np.zeros(ntips0)
 
+        # store the total biomass of the colony
         self.biomass = np.sum(self.C*self.dx*self.dy)
 
         theta = np.linspace( np.pi/2 , np.pi/2 + 2*np.pi  , ntips0 + 1) # Initial positions will be radially symmetric with respect to the initial innoculation. By
         # symmetry this is the best strategy to ensure that nutrients are well distributed for a uniform background nutrient concentration 
         self.theta = theta[:-1]
         
+        # place the initial positions of these branch tips
         self.rX = 0.5*self.r0*np.cos(self.theta) + self.inoc[0]
         self.rY = 0.5*self.r0*np.sin(self.theta) + self.inoc[1]
 
+        # store the number of tips in a variable that can be referenced elsewhere
         self.ntips = ntips0
 
     def inc_biomass(self, N, dt):
-    
+        # ------------------------------- Handle nutrient uptake into the biomass ----------------------------
+
         # Compute fN(x,y) across the entire 2D field. 
         fN = N / (N + self.KN) * self.Cm / (self.C + self.Cm) * self.C
         
         # Compute the nutrient loss due to consumption as a function of space
         dN = -self.bN*fN
         
-        # Compute the nutrient loss in space due to consumption 
-        # N = N + dN*dt
+        # Compute the nutrient loss in space due to consumption
         change_in_N = dN*dt
         
         # Now treat the gain in cell density, this is just an ODE solved via first order Euler explicit. 
         dC = self.aC * fN
         self.C = self.C + dC*dt
 
+        # return only the change so multiple colonies can be updated in the same timestep
         return change_in_N
 
     def update_dl(self, first_timestep = False):
+        # -------------------------------------- Calculate how much to extend the branches ----------------------------------
 
         # Store the current biomass in the system
         biomass_pre = self.biomass
@@ -88,6 +95,7 @@ class colony:
         return dl
     
     def check_bifurcate(self, dl):
+        # -------------------------------------- Check whether or not the branch should be split -------------------------------
 
         # Create some varialbes to store the new locations of the tips 
         rX_new = self.rX
@@ -106,8 +114,6 @@ class colony:
             # Now if the second largest element in the list, i.e. the closest tip, exceeds the distance threshold, then we bifurcate. 
             if dist_sq[1] > self.crit_R**2:
                 
-                # print("BIFURCATING!")
-                
                 # Append a new tip to the list located at 45 degree angles from the bifurcation point
                 rX_new = np.append(rX_new, self.rX[k] + dl*np.sin(self.theta[k] + 0.5 * np.pi))
                 rY_new = np.append(rY_new, self.rY[k] + dl*np.cos(self.theta[k] + 0.5 * np.pi))
@@ -125,13 +131,15 @@ class colony:
                 # of the numerics. 
                 theta_new = np.append(theta_new, self.theta[k])
         
+        # update the colony variables with new values
         self.rX = rX_new
         self.rY = rY_new
         self.theta = theta_new
         self.ntips = self.rX.shape[0]
 
     def branch_extend(self, dl, N, first_timestep = False):
-
+        
+        # initialize a tracker to keep track of whether branches are too close to the edges or not
         terminated_idx = np.zeros(self.ntips, dtype = bool)
         
         # Store a previous version of the agent location before update; we'll use this to handle terminaing the growth 
@@ -210,28 +218,38 @@ class colony:
 class simulation:
 
     def __init__(self, N0, dims, dt, DN, L, totalT):
-        self.N0 = N0
-        self.N = np.zeros(dims) + self.N0
-        self.dims = np.array(dims)
-        self.L = L
-        self.d = self.L/(self.dims-1)
-        self.dt = dt
-        self.DN = DN
-        self.totalT = totalT
-        self.nt = self.totalT/self.dt
+        # ------------------------------ Initialize general simulation properties and variables --------------------------
+
+        self.N0 = N0 # initial nutrient concentration
+        self.N = np.zeros(dims) + self.N0 # initial nutrient matrix
+        self.dims = np.array(dims) # resolution of the environment
+        self.L = L # size of the environment
+        self.d = self.L/(self.dims-1) # small space step
+        self.dt = dt # small time step
+        self.DN = DN # Diffusion rate constant of the nutrient through space
+        self.totalT = totalT # length of the simulation
+        self.nt = self.totalT/self.dt # number of timesteps in the simulation
+
+        # the following lines set up the xy positions of each point in the grid
         x = np.linspace(-self.L/2, self.L/2, self.dims[0])
         y = np.linspace(-self.L/2, self.L/2, self.dims[1])
         self.XX, self.YY = np.meshgrid(x, y)
-        self.colonies = []
-        self.diffusion_times = []
-        self.branching_times = []
-        self.bifurcation_times = []
 
+        # initialize lists to keep track of the colonies and patterns of biomass and nutrients over all timesteps
+        self.colonies = []
         self.pattern_store = []
         self.nutrient_store = []
         self.biomass_store = []
 
+        # store the processing times taken
+        self.diffusion_times = []
+        self.branching_times = []
+        self.bifurcation_times = []
+
+
+
         def diff(dx, dy, nx, ny, dt, D):
+            # --------------------------------- Maths governing nutrient diffusion -------------------------------
             
             # First compute the assocatiated mu terms in both directions
             mu_x = D*dt/(dx**2)
@@ -265,35 +283,60 @@ class simulation:
             U1 = Iy + mu_y / 2 * My 
             
             return V1, V2, U1, U2
-
+        
+        # use the above to assign the matrices needed to calculate diffusion of nutrients
         self.V1, self.V2, self.U1, self.U2 = diff(*self.d, *self.dims, self.dt, self.DN)
 
     def diffuse_nutrients(self):
+        # -------------------------------------- Diffuse the nutrients -----------------------------------------
 
         # Simulate the diffusion of nutrient in space via approximate CN scheme. Recall @ defines matrix-matrix multiplication. 
         Nstar = np.linalg.inv( self.V1 ) @ ( self.N @ self.U1 ) # Solve equation one to get an intermediate solution
         self.N = ( self.V2 @ Nstar ) @ np.linalg.inv( self.U2 ) # Solve equation two to get the final update
 
     def add_colony(self, inoc = (0, 0), c0 = 2000.0, r0 = 5.0, width = 2.0, density = 0.2, gamma = 7.5, bN = 160, aC = 1.2, KN = 0.8, Cm = 0.05):
+        # ---------------------------------------- Add a colony to the simulation ----------------------------------------
 
+        # set up a colony object and add spaces to the storage lists for the biomass and the pattern
         self.colonies.append(colony((self.XX, self.YY), inoc, c0, r0, width, density, gamma, bN, aC, KN, Cm))
         self.biomass_store.append([])
         self.pattern_store.append([])
 
     def timestep(self, first = False, extend = False):
-        
+        # -------------------------------------- Step forward in time by the timestep ------------------------------------
+
+        # set up a variable to track whether the simulation should end or not
         end_sim = False
 
         start = time.time()
+
+        # Compute the biomass change and the nutrient change due to all the colonies in the simulation,
+        # and store this all in an update matrix
         N_update = np.zeros(self.dims)
         for i in range(len(self.colonies)):
             N_update += self.colonies[i].inc_biomass(self.N, self.dt)
+        
+        # Add this complete update matrix to the nutrient grid
         self.N = self.N + N_update
-        self.diffuse_nutrients()
-        end = time.time()
-        self.diffusion_times.append(end - start)
 
+        # diffuse nutrients across the grid according to the diffusion model
+        self.diffuse_nutrients()
+
+        end = time.time()
+
+        # track the time taken for the colonies to uptake nutrients and then the nutrient to diffuse
+        self.diffusion_times.append(end - start)
+        
+        # To reduce the computational power required only calculate whether a branch should be extended or not
+        # at specific times through the simulation
         if extend:
+
+            # for each colony, follow these steps:
+            # 1. Derive the length that the branches should be extended
+            # 2. Check whether each branch needs to split or not
+            # 3. Add length to each branch
+            # 4. Diffuse nutrient across the grid 
+            # 5. Store the biomass and the pattern of the colony in their storage lists
             for i in range(len(self.colonies)):
                 dl = self.colonies[i].update_dl(first_timestep = first)
 
@@ -314,19 +357,27 @@ class simulation:
                 # Store patterns throughout simulation to generate one final gif
                 self.biomass_store[i].append( self.colonies[i].C.copy() )
                 self.pattern_store[i].append( self.colonies[i].P.copy() )
+
+            # store the nutrient matrix at each timestep
             self.nutrient_store.append( self.N.copy() )
 
         return end_sim
 
     def run_sim(self):
+        # ------------------------------------ Run the simulation's time loop ---------------------------------------
 
+        # set up the loop that runs the simulation
         for i in tqdm(range(int(self.nt))):
             end_sim = self.timestep(not bool(i), not bool(i % (0.2/self.dt)))
+
+            # If the colony grows too close to the edges of the grid, stop the simulation
             if end_sim:
                 break
 
     def animate_and_show(self):
+        
 
+        # 
         self.biomass_store = np.sum(self.biomass_store, axis = 0)
         self.pattern_store = np.array(np.sum(self.pattern_store, axis = 0, dtype = bool), dtype = int)
         self.total_masses = np.sum(self.biomass_store, axis = (1,2))
