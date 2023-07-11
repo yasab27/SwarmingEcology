@@ -1,6 +1,7 @@
 import numpy as np
 import time
 from scipy.interpolate import RectBivariateSpline
+from scipy.sparse.linalg import spsolve
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from matplotlib import animation
@@ -290,7 +291,7 @@ class simulation:
     def diffuse_nutrients(self):
         # -------------------------------------- Diffuse the nutrients -----------------------------------------
 
-        # Simulate the diffusion of nutrient in space via approximate CN scheme. Recall @ defines matrix-matrix multiplication. 
+        # Simulate the diffusion of nutrient in space via approximate CN scheme. Recall @ defines matrix-matrix multiplication.
         Nstar = np.linalg.inv( self.V1 ) @ ( self.N @ self.U1 ) # Solve equation one to get an intermediate solution
         self.N = ( self.V2 @ Nstar ) @ np.linalg.inv( self.U2 ) # Solve equation two to get the final update
 
@@ -375,22 +376,27 @@ class simulation:
                 break
 
     def animate_and_show(self):
-        
+        # ------------------ Plot and animate graphs showing how the pattern of the swarm changes over time --------
 
-        # 
+        # Sum over biomasses and patterns of all the colonies in the simulation to show the pattern of all the biomass
         self.biomass_store = np.sum(self.biomass_store, axis = 0)
         self.pattern_store = np.array(np.sum(self.pattern_store, axis = 0, dtype = bool), dtype = int)
         self.total_masses = np.sum(self.biomass_store, axis = (1,2))
 
+        # set up and plot graphs
         fig, [ax1, ax2, ax3, ax4] = plt.subplots(1,4, figsize = (24,6))
         ax1.set_title("Pattern")
         ax2.set_title("Nutrient Concentration")
-        ax3.set_title("Nutrient Crosssection")
+        ax3.set_title("Nutrient Cross-section")
+        ax3.set_xlim(0, self.dims[0])
         ax3.set_ylim(0,10.0)
+        ax3.set_aspect(np.diff(ax3.get_xlim())[0] / np.diff(ax3.get_ylim())[0])
         ax4.set_xlim( 0, len(self.pattern_store) )
         ax4.set_ylim( 0, self.total_masses.max() )
         ax4.set_title("Total Biomass")
+        ax4.set_aspect(np.diff(ax4.get_xlim())[0]/np.diff(ax4.get_ylim())[0])
 
+        # animate the stored time data
         time_series_data = list([] for i in range(0, len(self.pattern_store), 3))
         for i in range(0,len(self.pattern_store),3):
             
@@ -406,9 +412,8 @@ class simulation:
 if __name__ == "__main__":
 
     master_sim = simulation(N0 = 8, dims = (1000, 1000), dt = 0.02, DN = 9, L = 90, totalT = 48)
-    master_sim.add_colony(inoc = (15, -10))
-    master_sim.add_colony(inoc = (-15, -10))
-    master_sim.add_colony(inoc = (0, 20))
+    master_sim.add_colony(inoc = (15, 0))
+    master_sim.add_colony(inoc = (-15, 0))
     master_sim.run_sim()
     master_sim.animate_and_show()
 
