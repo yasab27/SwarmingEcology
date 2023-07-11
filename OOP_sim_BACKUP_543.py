@@ -1,7 +1,11 @@
 import numpy as np
 import time
 from scipy.interpolate import RectBivariateSpline
+<<<<<<< HEAD
+from scipy.sparse.linalg import spsolve
+=======
 import scipy.sparse as sp
+>>>>>>> adrian_sparse
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from matplotlib import animation
@@ -293,9 +297,15 @@ class simulation:
     def diffuse_nutrients(self):
         # -------------------------------------- Diffuse the nutrients -----------------------------------------
 
+<<<<<<< HEAD
+        # Simulate the diffusion of nutrient in space via approximate CN scheme. Recall @ defines matrix-matrix multiplication.
+        Nstar = np.linalg.inv( self.V1 ) @ ( self.N @ self.U1 ) # Solve equation one to get an intermediate solution
+        self.N = ( self.V2 @ Nstar ) @ np.linalg.inv( self.U2 ) # Solve equation two to get the final update
+=======
         # Simulate the diffusion of nutrient in space via approximate CN scheme. Recall @ defines matrix-matrix multiplication. 
         Nstar = sp.linalg.spsolve(self.V1, self.N @ self.U1)
         self.N = sp.linalg.spsolve(self.U2.T, (self.V2 @ Nstar).T).T
+>>>>>>> adrian_sparse
 
     def add_colony(self, inoc = (0, 0), c0 = 2000.0, r0 = 5.0, width = 2.0, density = 0.2, gamma = 7.5, bN = 160, aC = 1.2, KN = 0.8, Cm = 0.05):
         # ---------------------------------------- Add a colony to the simulation ----------------------------------------
@@ -414,9 +424,14 @@ class simulation:
 if __name__ == "__main__":
 
     master_sim = simulation(N0 = 8, dims = (1000, 1000), dt = 0.02, DN = 9, L = 90, totalT = 48)
+<<<<<<< HEAD
+    master_sim.add_colony(inoc = (15, 0))
+    master_sim.add_colony(inoc = (-15, 0))
+=======
     # master_sim.add_colony(inoc = (15, 0))
     # master_sim.add_colony(inoc = (-15, 0))
     master_sim.add_colony()
+>>>>>>> adrian_sparse
     master_sim.run_sim()
     master_sim.animate_and_show()
 

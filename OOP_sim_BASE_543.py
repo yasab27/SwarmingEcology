@@ -1,7 +1,6 @@
 import numpy as np
 import time
 from scipy.interpolate import RectBivariateSpline
-import scipy.sparse as sp
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from matplotlib import animation
@@ -57,14 +56,12 @@ class colony:
         # store the number of tips in a variable that can be referenced elsewhere
         self.ntips = ntips0
 
-        self.base = np.ones((self.nx, self.ny))
-
     def inc_biomass(self, N, dt):
         # ------------------------------- Handle nutrient uptake into the biomass ----------------------------
 
         # Compute fN(x,y) across the entire 2D field. 
         fN = N / (N + self.KN) * self.Cm / (self.C + self.Cm) * self.C
-
+        
         # Compute the nutrient loss due to consumption as a function of space
         dN = -self.bN*fN
         
@@ -206,7 +203,7 @@ class colony:
                     self.rY[k] = rY_pre[k]
 
         return terminated_idx
-    
+        
     def fill_diffuse(self):
 
         # Lastly fill the width of the branches of the simulations. This is just done by setting all the points within a width/2
@@ -216,7 +213,7 @@ class colony:
             self.P[d <= self.width/2] = 1
 
         # Now simulate the very rapid diffusion of the cell biomass across the pattern
-        self.C[self.P == 1] = self.biomass/( np.sum(self.P) * self.dx * self.dy)
+        self.C[self.P == 1] = self.biomass/( np.sum(self.P) * self.dx * self.dy) 
 
 class simulation:
 
@@ -262,11 +259,11 @@ class simulation:
             Ix = np.eye(nx)
             Iy = np.eye(ny)
 
-            P = Ix * -2
+            P = np.diagflat(np.ones(nx)) * -2
             P2 = np.eye(nx, k = 1)
             P3 = np.eye(nx, k = -1)
 
-            Q = Iy * -2
+            Q = np.diagflat(np.ones(ny)) * -2
             Q2 = np.eye(ny, k = 1)
             Q3 = np.eye(ny, k = -1)
 
@@ -280,10 +277,10 @@ class simulation:
             My[ny - 2, ny - 1] = 2
             
             # Lastly, define the four major operators used to solve our two coupled 1D problems
-            V1 = sp.csr_array(Ix - mu_x / 2 * Mx)
-            V2 = sp.csr_array(Ix + mu_x / 2 * Mx)
-            U2 = sp.csr_array(Iy - mu_y / 2 * My)
-            U1 = sp.csr_array(Iy + mu_y / 2 * My)
+            V1 = Ix - mu_x / 2 * Mx
+            V2 = Ix + mu_x / 2 * Mx
+            U2 = Iy - mu_y / 2 * My
+            U1 = Iy + mu_y / 2 * My 
             
             return V1, V2, U1, U2
         
@@ -294,8 +291,8 @@ class simulation:
         # -------------------------------------- Diffuse the nutrients -----------------------------------------
 
         # Simulate the diffusion of nutrient in space via approximate CN scheme. Recall @ defines matrix-matrix multiplication. 
-        Nstar = sp.linalg.spsolve(self.V1, self.N @ self.U1)
-        self.N = sp.linalg.spsolve(self.U2.T, (self.V2 @ Nstar).T).T
+        Nstar = np.linalg.inv( self.V1 ) @ ( self.N @ self.U1 ) # Solve equation one to get an intermediate solution
+        self.N = ( self.V2 @ Nstar ) @ np.linalg.inv( self.U2 ) # Solve equation two to get the final update
 
     def add_colony(self, inoc = (0, 0), c0 = 2000.0, r0 = 5.0, width = 2.0, density = 0.2, gamma = 7.5, bN = 160, aC = 1.2, KN = 0.8, Cm = 0.05):
         # ---------------------------------------- Add a colony to the simulation ----------------------------------------
@@ -378,27 +375,22 @@ class simulation:
                 break
 
     def animate_and_show(self):
-        # ------------------ Plot and animate graphs showing how the pattern of the swarm changes over time --------
+        
 
-        # Sum over biomasses and patterns of all the colonies in the simulation to show the pattern of all the biomass
+        # 
         self.biomass_store = np.sum(self.biomass_store, axis = 0)
         self.pattern_store = np.array(np.sum(self.pattern_store, axis = 0, dtype = bool), dtype = int)
         self.total_masses = np.sum(self.biomass_store, axis = (1,2))
 
-        # set up and plot graphs
         fig, [ax1, ax2, ax3, ax4] = plt.subplots(1,4, figsize = (24,6))
         ax1.set_title("Pattern")
         ax2.set_title("Nutrient Concentration")
-        ax3.set_title("Nutrient Cross-section")
-        ax3.set_xlim(0, self.dims[0])
+        ax3.set_title("Nutrient Crosssection")
         ax3.set_ylim(0,10.0)
-        ax3.set_aspect(np.diff(ax3.get_xlim())[0] / np.diff(ax3.get_ylim())[0])
         ax4.set_xlim( 0, len(self.pattern_store) )
         ax4.set_ylim( 0, self.total_masses.max() )
         ax4.set_title("Total Biomass")
-        ax4.set_aspect(np.diff(ax4.get_xlim())[0]/np.diff(ax4.get_ylim())[0])
 
-        # animate the stored time data
         time_series_data = list([] for i in range(0, len(self.pattern_store), 3))
         for i in range(0,len(self.pattern_store),3):
             
@@ -414,9 +406,9 @@ class simulation:
 if __name__ == "__main__":
 
     master_sim = simulation(N0 = 8, dims = (1000, 1000), dt = 0.02, DN = 9, L = 90, totalT = 48)
-    # master_sim.add_colony(inoc = (15, 0))
-    # master_sim.add_colony(inoc = (-15, 0))
-    master_sim.add_colony()
+    master_sim.add_colony(inoc = (15, -10))
+    master_sim.add_colony(inoc = (-15, -10))
+    master_sim.add_colony(inoc = (0, 20))
     master_sim.run_sim()
     master_sim.animate_and_show()
 
