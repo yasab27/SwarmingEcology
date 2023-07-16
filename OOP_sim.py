@@ -63,7 +63,7 @@ class branch:
         
         # Now using the differential in biomass, compute how long we should extend the tips of the branches in this system. 
         # Since the system is symmetric with respect to the nutrient concentration, we only need to compute this once. 
-        dl = self.colony.gamma*len(self.colony.branches)*(self.biomass - biomass_pre)/self.width
+        dl = self.colony.gamma*(self.biomass - biomass_pre)/self.width
         
         # For the first branch, we just set this value for extension hard-codedly
         if first_timestep:
@@ -499,7 +499,7 @@ class simulation:
 
 if __name__ == "__main__":
 
-    master_sim = simulation(N0 = np.broadcast_to(np.linspace(8, 8, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = 9, L = 90, totalT = 48)
+    master_sim = simulation(N0 = np.broadcast_to(np.linspace(8, 8, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = 9, L = 90, totalT = 640/50)
     # master_sim.add_colony(inoc = (15, 0))
     # master_sim.add_colony(inoc = (-15, 0))
     master_sim.add_colony()
