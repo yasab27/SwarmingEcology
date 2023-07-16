@@ -12,20 +12,26 @@ def pol2cart(pol):
 
 class branch:
 
-    def __init__(self, colony, W0, bmass, tip_loc, density, theta0):
+    def __init__(self, colony, W0, bmass, tip_loc, density, theta0, first, r0):
         # --------------------------- Initialize branch variables -----------------------------
 
         self.width = W0 # branch width
         self.theta = theta0 # angle of the branch
-        self.tip_loc = np.array(tip_loc) # Location of the tip of the branch
+        self.tip_loc = np.array(tip_loc, dtype = np.float64) # Location of the tip of the branch
         self.biomass = bmass # Local branch biomass
         self.colony = colony # the colony which the branch is part of 
         self.density = density # Local branch density
         self.crit_R = 1.5/self.density
         self.C = np.zeros((colony.nx, colony.ny)) # cell density grid
         self.P = np.zeros((colony.nx, colony.ny)) # pattern grid
+        self.RR = np.sqrt((self.colony.XX - self.tip_loc[0])**2 + (self.colony.YY - self.tip_loc[1])**2)
+        if first:
+            self.P[self.RR <= r0] = 1
+            self.tip_loc[0] += 0.5*r0*np.cos(self.theta)
+            self.tip_loc[1] += 0.5*r0*np.sin(self.theta)
         d = np.sqrt( (self.colony.XX-self.tip_loc[0])**2 + (self.colony.YY-self.tip_loc[1])**2 )
         self.P[d <= self.width/2] = 1
+        self.C[self.P == 1] = self.biomass/( np.sum(self.P) * self.colony.dx * self.colony.dy)
 
     def inc_biomass(self, N, dt):
         # ------------------------------- Handle nutrient uptake into the biomass ----------------------------
@@ -57,7 +63,7 @@ class branch:
         
         # Now using the differential in biomass, compute how long we should extend the tips of the branches in this system. 
         # Since the system is symmetric with respect to the nutrient concentration, we only need to compute this once. 
-        dl = self.colony.gamma*(self.biomass - biomass_pre)/self.width
+        dl = self.colony.gamma*len(self.colony.branches)*(self.biomass - biomass_pre)/self.width
         
         # For the first branch, we just set this value for extension hard-codedly
         if first_timestep:
@@ -87,7 +93,7 @@ class branch:
             
             # Now we interpolate the value of the nutrient concentration at each of these points. We do this by first fitting a bivariate
             # spline to the current nutrient concentration and then interpolating at our points of interests. 
-            interp = RectBivariateSpline(self.XX[0, :], self.YY[:, 0], N.T)
+            interp = RectBivariateSpline(self.colony.XX[0, :], self.colony.YY[:, 0], N.T)
             
             # Evaluate at desired points
             N_int = interp.ev(candidates[0], candidates[1])
@@ -105,7 +111,7 @@ class branch:
                 
             # Now hard enforce the rule that the branches will terminate growing near the edges, here defined as 85% of the distance from
             # the edge of the simulation
-            terminate = np.linalg.norm(self.tip_loc) > 0.85*(self.XX[0,-1] - self.XX[0,0])/2
+            terminate = np.linalg.norm(self.tip_loc) > 0.85*(self.colony.XX[0,-1] - self.colony.XX[0,0])/2
 
         else:
             # If it is the first step, grow the branches by the hard-coded initial dl
@@ -121,7 +127,7 @@ class branch:
         self.P[d <= self.width/2] = 1
 
         # Now simulate the very rapid diffusion of the cell biomass across the branch
-        self.C[self.P == 1] = self.biomass/( np.sum(self.P) * self.dx * self.dy)
+        self.C[self.P == 1] = self.biomass/( np.sum(self.P) * self.colony.dx * self.colony.dy)
 
 class colony:
 
@@ -150,7 +156,7 @@ class colony:
         self.C = np.zeros((self.nx, self.ny))
         self.RR = np.sqrt((self.XX - self.inoc[0])**2 + (self.YY - self.inoc[1])**2)
         self.P[self.RR < self.r0] = 1 # start with a circular mass of cells
-        self.C[self.P == 1] = self.c0/( np.sum(self.P) * self.nx * self.ny) # set cell density in this circular mass
+        # self.C[self.P == 1] = self.c0/( np.sum(self.P) * self.nx * self.ny) # set cell density in this circular mass
 
         ntips0 = np.round(2 * np.pi * self.r0 * self.density) # Calculate the total initial number of tips in the system
         ntips0 = max(ntips0, 2) # Threshold such that we always have 2 tips
@@ -160,14 +166,13 @@ class colony:
         # symmetry this is the best strategy to ensure that nutrients are well distributed for a uniform background nutrient concentration 
         self.theta = theta[:-1]
 
+        # store the total biomass of the colony
+        self.biomass = self.c0*self.dx*self.dy/(self.nx*self.ny)
+
         # initialize the correct number of branch objects
         self.branches = []
-        tip_locations = np.array((0.5*self.r0*np.cos(self.theta) + self.inoc[0], 0.5*self.r0*np.sin(self.theta) + self.inoc[1])).T
         for i in range(ntips0):
-            self.branches.append(branch(self, self.width, self.biomass/ntips0, tip_locations[i], self.density))
-
-        # store the total biomass of the colony
-        self.biomass = np.sum(self.C*self.dx*self.dy)
+            self.branches.append(branch(self, self.width, self.biomass/ntips0, [0,0], self.density, self.theta[i], True, self.r0))
 
         # store the number of tips in a variable that can be referenced elsewhere
         self.ntips = ntips0
@@ -176,7 +181,7 @@ class colony:
         # -------------------------------------- Check whether or not the branch should be split -------------------------------
 
         # Create a variable to store the locations of the tips 
-        branchtips = np.array(list(k.tip_loc for k in self.branches)).T
+        branchtips = np.array(list(k.tip_loc for k in self.branches))
 
         # Now we iterate through each individual branch in our system and bifurcate our new branch IF the density criterion is met
         for k in range(len(self.branches)):
@@ -186,7 +191,8 @@ class colony:
             
             # Sort the distances
             dist_sq = np.sort(dist_sq)
-            
+
+                     
             # Now if the second largest element in the list, i.e. the closest tip, exceeds the distance threshold, then we bifurcate. 
             if dist_sq[1] > self.branches[k].crit_R**2:
                 
@@ -426,7 +432,7 @@ class simulation:
 
                 start = time.time()
                 for k in range(len(self.colonies[i].branches)):
-                    terminate = self.colonies[i].branch_extend(dl, self.N, first_timestep = first)
+                    terminate = self.colonies[i].branches[k].extend(dl[k], first, self.N)
                     if terminate:
                         end_sim = True
                 end = time.time()
@@ -435,8 +441,8 @@ class simulation:
                 for k in range(len(self.colonies[i].branches)):
                     self.colonies[i].branches[k].fill_diffuse()
 
-                self.colonies[i].C = np.sum(list(m.C for m in self.colonies[i].branches))
-                self.colonies[i].P = np.array(np.sum(list(m.P for m in self.colonies[i].branches)), dtype = bool)
+                self.colonies[i].C = np.sum(list(m.C for m in self.colonies[i].branches), axis = 0)
+                self.colonies[i].P = np.array(np.sum(list(m.P for m in self.colonies[i].branches), axis = 0), dtype = bool)
                 # Store patterns throughout simulation to generate one final gif
                 self.biomass_store[i].append( self.colonies[i].C.copy() )
                 self.pattern_store[i].append( self.colonies[i].P.copy() )
@@ -493,7 +499,7 @@ class simulation:
 
 if __name__ == "__main__":
 
-    master_sim = simulation(N0 = np.broadcast_to(np.linspace(6, 10, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = 9, L = 90, totalT = 48)
+    master_sim = simulation(N0 = np.broadcast_to(np.linspace(8, 8, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = 9, L = 90, totalT = 48)
     # master_sim.add_colony(inoc = (15, 0))
     # master_sim.add_colony(inoc = (-15, 0))
     master_sim.add_colony()
