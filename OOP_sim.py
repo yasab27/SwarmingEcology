@@ -12,7 +12,7 @@ def pol2cart(pol):
 
 class branch:
 
-    def __init__(self, colony, W0, bmass, tip_loc, density, theta0, first, r0):
+    def __init__(self, colony, W0, bmass, tip_loc, density, theta0, first, r0, P0 = None):
         # --------------------------- Initialize branch variables -----------------------------
 
         self.width = W0 # branch width
@@ -29,6 +29,16 @@ class branch:
             self.P[self.RR <= r0] = 1
             self.tip_loc[0] += 0.5*r0*np.cos(self.theta)
             self.tip_loc[1] += 0.5*r0*np.sin(self.theta)
+        if type(P0) is not type(None):
+            self.P = P0
+        if type(self.colony.Winterp) is not type(None):
+            self.Winterp_bool = True
+        else:
+            self.Winterp_bool = False
+        if type(self.colony.Dinterp) is not type(None):
+            self.Dinterp_bool = True
+        else:
+            self.Dinterp_bool = False
         d = np.sqrt( (self.colony.XX-self.tip_loc[0])**2 + (self.colony.YY-self.tip_loc[1])**2 )
         self.P[d <= self.width/2] = 1
         self.C[self.P == 1] = self.biomass/( np.sum(self.P) * self.colony.dx * self.colony.dy)
@@ -117,6 +127,14 @@ class branch:
             # If it is the first step, grow the branches by the hard-coded initial dl
             self.tip_loc += dl * np.array([np.cos(self.theta), np.sin(self.theta)])
 
+        tip_index = np.array(np.where((self.colony.XX - self.tip_loc[0] >= 0) & (self.colony.YY - self.tip_loc[1] >= 0)))[:, 0]
+        if self.Winterp_bool:
+            self.width = np.interp(N[*tip_index], self.colony.Winterp[0], self.colony.Winterp[1])
+
+        if self.Dinterp_bool:
+            self.density = np.interp(N[*tip_index], self.colony.Dinterp[0], self.colony.Dinterp[1])
+            self.crit_R = 1.5/self.density
+
         return terminate
     
     def fill_diffuse(self):
@@ -131,7 +149,7 @@ class branch:
 
 class colony:
 
-    def __init__(self, grid, inoc, c0, r0, width, density, gamma, bN, aC, KN, Cm):
+    def __init__(self, grid, inoc, c0, r0, width, density, gamma, bN, aC, KN, Cm, Winterp, Dinterp):
         # -------------------------- Initialize colony variables ------------------------------
 
         # assign initial condition variables to the colony
@@ -146,6 +164,8 @@ class colony:
         self.aC = aC # energy translation efficiency
         self.KN = KN # half saturation for nutrient uptake kinetics
         self.Cm = Cm # half saturation for cell density in monod model
+        self.Winterp = Winterp
+        self.Dinterp = Dinterp
         self.XX, self.YY = grid # the underlying grid on which the colony sits 
         # create more dimension variables
         self.nx, self.ny = self.XX.shape[0], self.YY.shape[0]
@@ -180,11 +200,10 @@ class colony:
     def check_bifurcate(self, dl_list):
         # -------------------------------------- Check whether or not the branch should be split -------------------------------
 
-        # Create a variable to store the locations of the tips 
-        branchtips = np.array(list(k.tip_loc for k in self.branches))
-
         # Now we iterate through each individual branch in our system and bifurcate our new branch IF the density criterion is met
-        for k in range(len(self.branches)):
+        for k in range(len(self.branches)): 
+            # Create a variable to store the locations of the tips
+            branchtips = np.array(list(m.tip_loc for m in self.branches))
             
             # Compute the distance of the current tip to all other tips in the system
             dist_sq = np.linalg.norm(branchtips - np.tile(self.branches[k].tip_loc, (self.ntips, 1)), axis = 1)
@@ -194,9 +213,9 @@ class colony:
 
                      
             # Now if the second largest element in the list, i.e. the closest tip, exceeds the distance threshold, then we bifurcate. 
-            if dist_sq[1] > self.branches[k].crit_R**2:
+            if dist_sq[1] > self.branches[k].crit_R:
                 
-                # Append a new tip to the list located at 45 degree angles from the bifurcation point
+                # Append a new tip to the list located at 90 degree angles from the bifurcation point
                 new_theta = self.branches[k].theta + 0.5*np.pi
                 new_tip_loc = self.branches[k].tip_loc + dl_list[k] * np.array([np.cos(new_theta), np.sin(new_theta)])
                 self.branches.append(branch(self,
@@ -204,12 +223,16 @@ class colony:
                                             self.branches[k].biomass/2,
                                             new_tip_loc,
                                             self.branches[k].density,
-                                            new_theta))
+                                            new_theta,
+                                            False,
+                                            0,
+                                            self.branches[k].P))
+                self.ntips += 1
                 
                 # For the second branch, we just commondere the "current" branch and just have it grow in the 45 degree of the
                 # the opposite direction. IE numerically we don't consider this a process of a single branch dying and then
                 # two new ones growing from it like a hydra, rather one branch starts to curve and the other branch splits 
-                # off from it at the deflection angle of 90 degrees.
+                # off from it at the deflection angle of 180 degrees.
                 
                 update_theta = self.branches[k].theta - 0.5*np.pi
                 self.branches[k].tip_loc += dl_list[k] * np.array([np.cos(update_theta), np.sin(update_theta)])
@@ -217,84 +240,6 @@ class colony:
         
         # update the colony variables with new values
         self.ntips = len(self.branches)
-
-    def branch_extend(self, dl, N, first_timestep = False):
-        
-        # initialize a tracker to keep track of whether branches are too close to the edges or not
-        terminated_idx = np.zeros(self.ntips, dtype = bool)
-        
-        # Store a previous version of the agent location before update; we'll use this to handle terminaing the growth 
-        # of a branch at maximal distance. 
-        rX_pre = self.rX
-        rY_pre = self.rY
-        
-        # If this is the first step, just grow the branches from the current position by the hard-coded initial dl
-        if first_timestep:
-            self.rX = self.rX + dl * np.sin(self.theta)
-            self.rY = self.rY + dl * np.cos(self.theta)
-
-        else:
-            
-            # Okay, so to predict tip extension we need to predict the direction of growth for each tip. To this end we 
-            # proceed in the following procedure. For each tip we consider a local circular region around it with radius
-            # equal to dl. We sample ~200 points on this circle at equal intervals and for each point, interpolate
-            # the local nutrient concentration. The branch then will extend in the direction of the most nutrient on this circle.
-            # Thus we are assuming that branches basically are advected in the direction of \Nab N which is maximal. 
-            
-            # First we need to generate, for each tip, a sample of points on a cirlce which are dL from the center. We use
-            # the delta vector to specify the 200 points on this circle. 
-            delta = np.pi*np.linspace(-1,1,200)
-            
-            # Now for each tip we create a matrix which is ntips x delta.shape[0], where each row corresponds to 
-            # angle samples around the point.
-            theta0 = np.tile(delta, (self.ntips, 1))
-            
-            # Now consider the points on a circle dl away radiating out from our delta angles
-            x_candidates = self.rX + dl*np.sin(theta0).T
-            y_candidates = self.rY + dl*np.cos(theta0).T
-            
-            # Now we interpolate the value of the nturient concentration at each of these points. We do this by first fitting a bivariate
-            # spline to the current nutrient concentration and then interpolating at our points of interests. 
-            interp = RectBivariateSpline(self.XX[0, :], self.YY[:, 0], N.T)
-            
-            # Evaluate at desired points
-            N_int = interp.ev(x_candidates, y_candidates)
-            
-            # Now for each agent, and thus each row in the interpolated matrix, we pick the direction which maximizes the nutrient
-            # concentration. We thus need to compute the argmax for each row, i.e. the index at which nutrient is maximized. This can
-            # be then used to look up the optimal directional angle in the next step. 
-            
-            # Find the maximal direction on the circle
-            maxes = np.argmax(N_int, axis = 0)
-            
-            # Update the length of each tip as well as update the growth direction
-            for k in range(self.ntips):
-                self.rX[k] = x_candidates.T[k, maxes[k]]
-                self.rY[k] = y_candidates.T[k, maxes[k]]
-        
-                self.theta[k] = theta0[k, maxes[k]] # + np.random.randn(0,1)*noise_amp OPTIONALLY ADD NOISE TO GROWTH DIRECTION
-                
-            # Now hard enforce the rule that the branches will terminate growing near the edges, here defined as 85% of the distance from
-            # the edge of the simulation
-            terminated_idx = np.sqrt( self.rX**2 + self.rY**2 ) > 0.85*(self.XX[0,-1] - self.XX[0,0])/2
-                
-            for k in range(self.ntips):
-                if terminated_idx[k]:
-                    self.rX[k] = rX_pre[k]
-                    self.rY[k] = rY_pre[k]
-
-        return terminated_idx
-    
-    def fill_diffuse(self):
-
-        # Lastly fill the width of the branches of the simulations. This is just done by setting all the points within a width/2
-        # radius of the tips to 1, indicating they are filled with biofilms.
-        for k in range(self.ntips):
-            d = np.sqrt( (self.XX-self.rX[k])**2 + (self.YY-self.rY[k])**2 )
-            self.P[d <= self.width/2] = 1
-
-        # Now simulate the very rapid diffusion of the cell biomass across the pattern
-        self.C[self.P == 1] = self.biomass/( np.sum(self.P) * self.dx * self.dy)
 
 class simulation:
 
@@ -375,11 +320,11 @@ class simulation:
         Nstar = sp.linalg.spsolve(self.V1, self.N @ self.U1)
         self.N = sp.linalg.spsolve(self.U2.T, (self.V2 @ Nstar).T).T
 
-    def add_colony(self, inoc = (0, 0), c0 = 2000.0, r0 = 5.0, width = 2.0, density = 0.2, gamma = 7.5, bN = 160, aC = 1.2, KN = 0.8, Cm = 0.05):
+    def add_colony(self, inoc = (0, 0), c0 = 2000.0, r0 = 5.0, width = 2.0, density = 0.2, gamma = 7.5, bN = 160, aC = 1.2, KN = 0.8, Cm = 0.05, Winterp = None, Dinterp = None):
         # ---------------------------------------- Add a colony to the simulation ----------------------------------------
 
         # set up a colony object and add spaces to the storage lists for the biomass and the pattern
-        self.colonies.append(colony((self.XX, self.YY), inoc, c0, r0, width, density, gamma, bN, aC, KN, Cm))
+        self.colonies.append(colony((self.XX, self.YY), inoc, c0, r0, width, density, gamma, bN, aC, KN, Cm, Winterp, Dinterp))
         self.biomass_store.append([])
         self.pattern_store.append([])
 
@@ -421,18 +366,20 @@ class simulation:
             # 5. Store the biomass and the pattern of the colony in their storage lists
             for i in range(len(self.colonies)):
             
-                dl = []
+                dl_list = []
                 for k in range(len(self.colonies[i].branches)):
-                    dl.append(self.colonies[i].branches[k].update_dl(first_timestep = first))
+                    dl_list.append(self.colonies[i].branches[k].update_dl(first_timestep = first))
 
                 start = time.time()
-                self.colonies[i].check_bifurcate(dl)
+                self.colonies[i].check_bifurcate(dl_list)
                 end = time.time()
                 self.bifurcation_times.append(end - start)
 
                 start = time.time()
                 for k in range(len(self.colonies[i].branches)):
-                    terminate = self.colonies[i].branches[k].extend(dl[k], first, self.N)
+                    if k > len(dl_list) - 1:
+                        dl_list.append(self.colonies[i].branches[k].update_dl(first_timestep = first))
+                    terminate = self.colonies[i].branches[k].extend(dl_list[k], first, self.N)
                     if terminate:
                         end_sim = True
                 end = time.time()
@@ -498,23 +445,15 @@ class simulation:
         plt.show()
 
 if __name__ == "__main__":
+    
+    f = sio.loadmat('./NNdata/Parameters_gradient_Figure5.mat')
+    f2 = sio.loadmat('./NNdata/Parameters_multiseeding.mat')
+    Dinterp = (f['mapping_N'][0], f['mapping_optimD'][0])
+    Winterp = (f['mapping_N'][0], f['mapping_optimW'][0])
 
-    master_sim = simulation(N0 = np.broadcast_to(np.linspace(8, 8, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = 9, L = 90, totalT = 640/50)
+    master_sim = simulation(N0 = np.broadcast_to(np.linspace(4, 20, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = 9, L = 90, totalT = 48)
     # master_sim.add_colony(inoc = (15, 0))
     # master_sim.add_colony(inoc = (-15, 0))
-    master_sim.add_colony()
+    master_sim.add_colony(Winterp = Winterp, Dinterp = Dinterp)
     master_sim.run_sim()
     master_sim.animate_and_show()
-
-    # f = sio.loadmat('./NNdata/Parameters_gradient_Figure5.mat')
-    # f2 = sio.loadmat('./NNdata/Parameters_multiseeding.mat')
-    # f['gamma'] = f.pop('gama')
-    # for key in f.keys():
-    #     if type(f[key]) == np.ndarray:
-    #         f[key] = f[key][0]
-    #         print('{}: {}'.format(key, f[key]))
-
-
-    
-
-    
