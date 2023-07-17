@@ -127,12 +127,13 @@ class branch:
             # If it is the first step, grow the branches by the hard-coded initial dl
             self.tip_loc += dl * np.array([np.cos(self.theta), np.sin(self.theta)])
 
-        tip_index = np.array(np.where((self.colony.XX - self.tip_loc[0] >= 0) & (self.colony.YY - self.tip_loc[1] >= 0)))[:, 0]
+        sense_range = (self.colony.XX - self.tip_loc[0])**2 + (self.colony.YY - self.tip_loc[1])**2 < (2*self.width)**2
+        sense_range = sense_range & (self.C > 0)
         if self.Winterp_bool:
-            self.width = np.interp(N[*tip_index], self.colony.Winterp[0], self.colony.Winterp[1])
+            self.width = np.interp(np.average(N[sense_range]), self.colony.Winterp[0], self.colony.Winterp[1])
 
         if self.Dinterp_bool:
-            self.density = np.interp(N[*tip_index], self.colony.Dinterp[0], self.colony.Dinterp[1])
+            self.density = np.interp(np.average(N[sense_range]), self.colony.Dinterp[0], self.colony.Dinterp[1])
             self.crit_R = 1.5/self.density
 
         return terminate
@@ -192,7 +193,7 @@ class colony:
         # initialize the correct number of branch objects
         self.branches = []
         for i in range(ntips0):
-            self.branches.append(branch(self, self.width, self.biomass/ntips0, [0,0], self.density, self.theta[i], True, self.r0))
+            self.branches.append(branch(self, self.width, self.biomass/ntips0, self.inoc, self.density, self.theta[i], True, self.r0))
 
         # store the number of tips in a variable that can be referenced elsewhere
         self.ntips = ntips0
@@ -451,9 +452,8 @@ if __name__ == "__main__":
     Dinterp = (f['mapping_N'][0], f['mapping_optimD'][0])
     Winterp = (f['mapping_N'][0], f['mapping_optimW'][0])
 
-    master_sim = simulation(N0 = np.broadcast_to(np.linspace(4, 20, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = 9, L = 90, totalT = 48)
-    # master_sim.add_colony(inoc = (15, 0))
-    # master_sim.add_colony(inoc = (-15, 0))
-    master_sim.add_colony(Winterp = Winterp, Dinterp = Dinterp)
+    master_sim = simulation(N0 = np.broadcast_to(np.linspace(12, 12, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = 9, L = 90, totalT = 48)
+    master_sim.add_colony(inoc = (15, 0), Winterp = Winterp, Dinterp = Dinterp)
+    master_sim.add_colony(inoc = (-15, 0), Winterp = Winterp, Dinterp = Dinterp)
     master_sim.run_sim()
     master_sim.animate_and_show()
