@@ -127,7 +127,7 @@ class branch:
             # If it is the first step, grow the branches by the hard-coded initial dl
             self.tip_loc += dl * np.array([np.cos(self.theta), np.sin(self.theta)])
 
-        sense_range = (self.colony.XX - self.tip_loc[0])**2 + (self.colony.YY - self.tip_loc[1])**2 < (2*self.width)**2
+        sense_range = (self.colony.XX - self.tip_loc[0])**2 + (self.colony.YY - self.tip_loc[1])**2 < (self.width)**2
         sense_range = sense_range & (self.C > 0)
         if self.Winterp_bool:
             self.width = np.interp(np.average(N[sense_range]), self.colony.Winterp[0], self.colony.Winterp[1])
@@ -158,7 +158,7 @@ class colony:
         self.c0 = c0 # starting cell number
         self.r0 = r0 # radius of colony initially
         self.width = width # branch width
-        self.density = density # branch density to be maintained
+        self.density = density
         self.crit_R = 1.5 / self.density # distance from other branches at which bifurcation occurs
         self.gamma = gamma # colony expansion efficiency constant
         self.bN = bN # uptake rate of nutrients
@@ -325,6 +325,9 @@ class simulation:
         # ---------------------------------------- Add a colony to the simulation ----------------------------------------
 
         # set up a colony object and add spaces to the storage lists for the biomass and the pattern
+        
+        init_dens_range = (self.XX - inoc[0])**2 + (self.YY - inoc[1])**2 < (r0)**2
+        density = np.interp(np.average(self.N[init_dens_range]), Dinterp[0], Dinterp[1])
         self.colonies.append(colony((self.XX, self.YY), inoc, c0, r0, width, density, gamma, bN, aC, KN, Cm, Winterp, Dinterp))
         self.biomass_store.append([])
         self.pattern_store.append([])
@@ -346,6 +349,7 @@ class simulation:
         
         # Add this complete update matrix to the nutrient grid
         self.N = self.N + N_update
+        self.N = np.max((self.N, np.zeros(self.dims)), axis = 0)
 
         # diffuse nutrients across the grid according to the diffusion model
         self.diffuse_nutrients()
@@ -425,7 +429,7 @@ class simulation:
         ax2.set_title("Nutrient Concentration")
         ax3.set_title("Nutrient Cross-section")
         ax3.set_xlim(0, self.dims[0])
-        ax3.set_ylim(0,10.0)
+        ax3.set_ylim(0,np.max(self.nutrient_store[0]) + 2)
         ax3.set_aspect(np.diff(ax3.get_xlim())[0] / np.diff(ax3.get_ylim())[0])
         ax4.set_xlim( 0, len(self.pattern_store) )
         ax4.set_ylim( 0, self.total_masses.max() )
@@ -452,8 +456,9 @@ if __name__ == "__main__":
     Dinterp = (f['mapping_N'][0], f['mapping_optimD'][0])
     Winterp = (f['mapping_N'][0], f['mapping_optimW'][0])
 
-    master_sim = simulation(N0 = np.broadcast_to(np.linspace(12, 12, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = 9, L = 90, totalT = 48)
-    master_sim.add_colony(inoc = (15, 0), Winterp = Winterp, Dinterp = Dinterp)
-    master_sim.add_colony(inoc = (-15, 0), Winterp = Winterp, Dinterp = Dinterp)
+    master_sim = simulation(N0 = np.broadcast_to(np.linspace(0, 20, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.01, DN = f['DN'], L = 90, totalT = 48)
+    # master_sim.add_colony(inoc = (15, 0), Winterp = Winterp, Dinterp = Dinterp, Cm = f['Cm'][0,0])
+    # master_sim.add_colony(inoc = (-15, 0), Winterp = Winterp, Dinterp = Dinterp)
+    master_sim.add_colony(Winterp = Winterp, Dinterp = Dinterp, Cm = f['Cm'][0,0], bN = f['bN'][0,0], gamma = f['gama'][0,0], aC = f['aC'][0,0], KN = f['KN'][0,0])
     master_sim.run_sim()
     master_sim.animate_and_show()
