@@ -12,7 +12,7 @@ def pol2cart(pol):
 
 class branch:
 
-    def __init__(self, colony, W0, tip_loc, density, theta0, C0 = None):
+    def __init__(self, colony, W0, tip_loc, density, theta0, P0 = None):
         # --------------------------- Initialize branch variables -----------------------------
 
         self.width = W0 # branch width
@@ -27,9 +27,8 @@ class branch:
         #     self.P[self.RR <= r0] = 1
         #     self.tip_loc[0] += 0.5*r0*np.cos(self.theta)
         #     self.tip_loc[1] += 0.5*r0*np.sin(self.theta)
-        if type(C0) is not type(None):
-            self.C = C0
-            self.P[self.C > 0] = 1
+        if type(P0) is not type(None):
+            self.P = P0
         if type(self.colony.Winterp) is not type(None):
             self.Winterp_bool = True
         else:
@@ -38,25 +37,6 @@ class branch:
             self.Dinterp_bool = True
         else:
             self.Dinterp_bool = False
-
-    def inc_biomass(self, N, dt):
-        # ------------------------------- Handle nutrient uptake into the biomass ----------------------------
-
-        # Compute fN(x,y) across the entire 2D field. 
-        fN = N / (N + self.colony.KN) * self.colony.Cm / (self.C + self.colony.Cm) * self.C
-
-        # Compute the nutrient loss due to consumption as a function of space
-        dN = -self.colony.bN*fN
-        
-        # Compute the nutrient loss in space due to consumption
-        change_in_N = dN*dt
-        
-        # Now treat the gain in cell density, this is just an ODE solved via first order Euler explicit. 
-        dC = self.colony.aC * fN
-        self.C = self.C + dC*dt
-
-        # return only the change so multiple branches can be updated in the same timestep
-        return change_in_N
 
     def update_dl(self, first_timestep, dCdt_branch):
         # --------------------- Change dl according to increase in biomass --------------------
@@ -138,9 +118,6 @@ class branch:
         d = np.sqrt( (self.colony.sim.XX-self.tip_loc[0])**2 + (self.colony.sim.YY-self.tip_loc[1])**2 )
         self.P[d <= self.width/2] = 1
 
-        # Now simulate the very rapid diffusion of the cell biomass across the branch
-        self.C[self.P == 1] = np.sum(self.C)/np.sum(self.P)
-
 class colony:
 
     def __init__(self, sim, inoc, c0, r0, ntips0, width, density, gamma, bN, aC, KN, Cm, Winterp, Dinterp):
@@ -187,7 +164,7 @@ class colony:
         initial_tips = np.array([r0*np.cos(self.theta), r0*np.sin(self.theta)]).T
         self.branches = []
         for i in range(ntips0):
-            self.branches.append(branch(self, self.width, initial_tips[i], self.density, self.theta[i], self.C/ntips0))
+            self.branches.append(branch(self, self.width, initial_tips[i], self.density, self.theta[i], self.P))
 
         # store the number of tips in a variable that can be referenced elsewhere
         self.ntips = ntips0
@@ -204,7 +181,7 @@ class colony:
         # Now treat the gain in cell density, this is just an ODE solved via first order Euler explicit. 
         dC = self.aC * fN
 
-        # return only the change so multiple branches can be updated in the same timestep
+        # return only the change so multiple colonies can be updated in the same timestep
         return dN*self.sim.dt, dC*self.sim.dt
     
     def update_branch_biomass(self, dCdt):
@@ -212,14 +189,13 @@ class colony:
         
         dCdt_array = np.zeros((len(self.branches), *self.sim.dims))
 
-        self.C_branch_frac = np.zeros((self.ntips, *self.sim.dims))
+        self.P_branch_frac = np.zeros((self.ntips, *self.sim.dims))
+        P_sum_branches = np.sum(list(b.P for b in self.branches), axis = 0)
         for i in range(len(self.branches)):
-            self.C_branch_frac[i] = self.branches[i].C / self.C
-            self.C_branch_frac[i][np.isnan(self.C_branch_frac[i])] = 0
-            dCdt_array[i] = self.C_branch_frac[i] * dCdt
+            self.P_branch_frac[i] = 1 / (self.branches[i].P*P_sum_branches)
+            self.P_branch_frac[i][np.isinf(self.P_branch_frac[i])] = 0
+            dCdt_array[i] = self.P_branch_frac[i] * dCdt
             self.branches[i].C += dCdt_array[i]
-
-        self.C = np.sum(list(m.C for m in self.branches), axis = 0)
 
         return dCdt_array
 
@@ -254,7 +230,7 @@ class colony:
                                             new_tip_loc,
                                             new_branch_list[k].density,
                                             new_theta,
-                                            new_branch_list[k].C/2))
+                                            new_branch_list[k].P))
                 
                 # For the second branch, we just commondere the "current" branch and just have it grow in the 45 degree of the
                 # the opposite direction. IE numerically we don't consider this a process of a single branch dying and then
@@ -263,7 +239,6 @@ class colony:
                 
                 update_theta = new_branch_list[k].theta - 0.5*np.pi
                 new_branch_list[k].tip_loc += dl_list[k] * np.array([np.cos(update_theta), np.sin(update_theta)])
-                new_branch_list[k].C = new_branch_list[k].C/2 
 
         new_branch_list += new_branches
         self.ntips += len(new_branches)
@@ -272,8 +247,9 @@ class colony:
 
     def update_C(self):
         # ------------------------------------ Update C from the branch cell concentration ------------------------------
+        self.P = np.array(np.sum(list(b.P for b in self.branches), axis = 0), dtype = bool)
 
-        self.C = np.sum(list(b.C for b in self.branches), axis = 0)
+        self.C[self.P] = np.sum(list(b.C for b in self.branches))/np.sum(self.P)
 
 class simulation:
 
@@ -382,6 +358,7 @@ class simulation:
             N_update_i, dCdt_i = self.colonies[i].inc_biomass()
             N_update += N_update_i
             self.dCdt_arr[i] += self.colonies[i].update_branch_biomass(dCdt_i)
+            self.colonies[i].update_C()
         
         # Add this complete update matrix to the nutrient grid
         self.N = self.N + N_update
@@ -430,8 +407,6 @@ class simulation:
                     self.colonies[i].branches[k].fill_diffuse()
                 self.colonies[i].update_C()
 
-                self.colonies[i].C = np.sum(list(m.C for m in self.colonies[i].branches), axis = 0)
-                self.colonies[i].P = np.array(np.sum(list(m.P for m in self.colonies[i].branches), axis = 0), dtype = bool)
                 # Store patterns throughout simulation to generate one final gif
                 self.biomass_store[i].append( self.colonies[i].C.copy() )
                 self.pattern_store[i].append( self.colonies[i].P.copy() )
@@ -449,7 +424,7 @@ class simulation:
 
         # set up the loop that runs the simulation
         for i in tqdm(range(int(self.nt))):
-            end_sim = self.timestep(not bool(i), not bool(i % (0.2/self.dt)))
+            end_sim = self.timestep(not bool(i), not bool(i % (0.1/self.dt)))
 
             # If the colony grows too close to the edges of the grid, stop the simulation
             if end_sim:
@@ -491,14 +466,14 @@ class simulation:
 
 if __name__ == "__main__":
 
-    np.seterr(invalid = 'ignore')
+    np.seterr(divide = 'ignore')
     
     f = sio.loadmat('./NNdata/Parameters_gradient_Figure5.mat')
     f2 = sio.loadmat('./NNdata/Parameters_multiseeding.mat')
     Dinterp = (f['mapping_N'][0], f['mapping_optimD'][0])
     Winterp = (f['mapping_N'][0], f['mapping_optimW'][0])
 
-    master_sim = simulation(N0 = np.broadcast_to(np.linspace(8, 16, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = f['DN'], L = 90, totalT = 48)
+    master_sim = simulation(N0 = np.broadcast_to(np.linspace(6, 18, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.01, DN = f['DN'], L = 90, totalT = 48)
     # master_sim.add_colony(inoc = (15, 0), Winterp = Winterp, Dinterp = Dinterp, Cm = f['Cm'][0,0])
     # master_sim.add_colony(inoc = (-15, 0), Winterp = Winterp, Dinterp = Dinterp)
     master_sim.add_colony(ntips0 = 8, Winterp = Winterp, Dinterp = Dinterp, Cm = f['Cm'][0,0], bN = f['bN'][0,0], gamma = f['gama'][0,0], aC = f['aC'][0,0], KN = f['KN'][0,0])
