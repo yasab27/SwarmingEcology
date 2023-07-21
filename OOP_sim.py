@@ -1,6 +1,6 @@
 import numpy as np
 import time
-from scipy.interpolate import RectBivariateSpline
+import scipy.interpolate as sint
 import scipy.sparse as sp
 import scipy.io as sio
 from tqdm import tqdm
@@ -43,7 +43,7 @@ class branch:
         
         # For the first branch, we just set this value for extension hard-codedly
         if first_timestep:
-            dl = 0.5
+            dl = 2
         else:
             # Now using the differential in biomass, compute how long we should extend the tips of the branches in this system. 
             # Since the system is symmetric with respect to the nutrient concentration, we only need to compute this once. 
@@ -69,7 +69,7 @@ class branch:
             
             # First we need to generate, for the tip, a sample of points on a circle which are dL from the center. We use
             # the theta0 vector to specify the 200 points on this circle. 
-            theta0 = np.pi*np.linspace(-1,1,200)
+            theta0 = np.pi*np.linspace(-0.5,0.5,101)
 
             # This gives 'candidates' as the points dl from the current tip location
             delta = pol2cart((dl, theta0))
@@ -77,7 +77,7 @@ class branch:
             
             # Now we interpolate the value of the nutrient concentration at each of these points. We do this by first fitting a bivariate
             # spline to the current nutrient concentration and then interpolating at our points of interests. 
-            interp = RectBivariateSpline(self.colony.sim.XX[0, :], self.colony.sim.YY[:, 0], N.T)
+            interp = sint.RectBivariateSpline(self.colony.sim.XX[0, :], self.colony.sim.YY[:, 0], N.T)
             
             # Evaluate at desired points
             N_int = interp.ev(candidates[0], candidates[1])
@@ -135,9 +135,11 @@ class colony:
         self.aC = aC # energy translation efficiency
         self.KN = KN # half saturation for nutrient uptake kinetics
         self.Cm = Cm # half saturation for cell density in monod model
-        self.Winterp = Winterp
-        self.Dinterp = Dinterp
         self.sim = sim # the simulation in which the colony is situated
+        Wmat = np.interp(self.sim.N, Winterp[0], Winterp[1])
+        self.Winterp = sint.RectBivariateSpline(self.sim.x, self.sim.y, Wmat)
+        Dmat = np.interp(self.sim.N, Dinterp[0], Dinterp[1])
+        self.Dinterp = sint.RectBivariateSpline(self.sim.x, self.sim.y, Dmat)
 
         # initialize the position and cell mass grid 
         self.P = np.zeros(self.sim.dims)
@@ -153,7 +155,7 @@ class colony:
         else:
             ntips0 = int(ntips0)
 
-        theta = np.linspace( np.pi/2 , np.pi/2 + 2*np.pi  , ntips0 + 1) # Initial positions will be radially symmetric with respect to the initial innoculation. By
+        theta = np.linspace(0 , + 2*np.pi  , ntips0 + 1) + np.pi/ntips0 # Initial positions will be radially symmetric with respect to the initial innoculation. By
         # symmetry this is the best strategy to ensure that nutrients are well distributed for a uniform background nutrient concentration 
         self.theta = theta[:-1]
 
@@ -164,7 +166,7 @@ class colony:
         initial_tips = np.array([r0*np.cos(self.theta), r0*np.sin(self.theta)]).T
         self.branches = []
         for i in range(ntips0):
-            self.branches.append(branch(self, self.width, initial_tips[i], self.density, self.theta[i], self.P))
+            self.branches.append(branch(self, self.width, self.inoc, self.density, self.theta[i], self.P))
 
         # store the number of tips in a variable that can be referenced elsewhere
         self.ntips = ntips0
@@ -267,9 +269,9 @@ class simulation:
         self.nt = self.totalT/self.dt # number of timesteps in the simulation
 
         # the following lines set up the xy positions of each point in the grid
-        x = np.linspace(-self.L/2, self.L/2, self.dims[0])
-        y = np.linspace(-self.L/2, self.L/2, self.dims[1])
-        self.XX, self.YY = np.meshgrid(x, y)
+        self.x = np.linspace(-self.L/2, self.L/2, self.dims[0])
+        self.y = np.linspace(-self.L/2, self.L/2, self.dims[1])
+        self.XX, self.YY = np.meshgrid(self.x, self.y)
 
         # initialize lists to keep track of the colonies and patterns of biomass and nutrients over all timesteps
         self.colonies = []
@@ -424,7 +426,7 @@ class simulation:
 
         # set up the loop that runs the simulation
         for i in tqdm(range(int(self.nt))):
-            end_sim = self.timestep(not bool(i), not bool(i % (0.1/self.dt)))
+            end_sim = self.timestep(not bool(i), not bool(i % (0.2/self.dt)))
 
             # If the colony grows too close to the edges of the grid, stop the simulation
             if end_sim:
@@ -473,9 +475,9 @@ if __name__ == "__main__":
     Dinterp = (f['mapping_N'][0], f['mapping_optimD'][0])
     Winterp = (f['mapping_N'][0], f['mapping_optimW'][0])
 
-    master_sim = simulation(N0 = np.broadcast_to(np.linspace(6, 18, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.01, DN = f['DN'], L = 90, totalT = 48)
+    master_sim = simulation(N0 = np.broadcast_to(np.linspace(6, 18, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = f['DN'], L = 90, totalT = 17.6)
     # master_sim.add_colony(inoc = (15, 0), Winterp = Winterp, Dinterp = Dinterp, Cm = f['Cm'][0,0])
     # master_sim.add_colony(inoc = (-15, 0), Winterp = Winterp, Dinterp = Dinterp)
-    master_sim.add_colony(ntips0 = 8, Winterp = Winterp, Dinterp = Dinterp, Cm = f['Cm'][0,0], bN = f['bN'][0,0], gamma = f['gama'][0,0], aC = f['aC'][0,0], KN = f['KN'][0,0])
+    master_sim.add_colony(c0 = 1.6, ntips0 = 8, Winterp = Winterp, Dinterp = Dinterp, Cm = f['Cm'][0,0], bN = f['bN'][0,0], gamma = f['gama'][0,0], aC = f['aC'][0,0], KN = f['KN'][0,0])
     master_sim.run_sim()
     master_sim.animate_and_show()
