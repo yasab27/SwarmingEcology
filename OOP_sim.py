@@ -56,9 +56,8 @@ class branch:
 
         terminate = False
 
-        location = np.unravel_index(np.argmin((self.colony.sim.XX - self.tip_loc[0])**2 + (self.colony.sim.YY - self.tip_loc[1])**2), self.colony.sim.dims)
         if self.Winterp_bool:
-            self.width = np.interp(N[location], self.colony.Winterp[0], self.colony.Winterp[1])
+            self.width = self.colony.Winterp.ev(self.tip_loc[0], self.tip_loc[1])
 
         if not first:
             # Okay, so to predict tip extension we need to predict the direction of growth for each tip. To this end we 
@@ -69,7 +68,7 @@ class branch:
             
             # First we need to generate, for the tip, a sample of points on a circle which are dL from the center. We use
             # the theta0 vector to specify the 200 points on this circle. 
-            theta0 = np.pi*np.linspace(-0.5,0.5,101)
+            theta0 = np.pi*np.linspace(-0.5,0.5,101) + self.theta
 
             # This gives 'candidates' as the points dl from the current tip location
             delta = pol2cart((dl, theta0))
@@ -101,35 +100,32 @@ class branch:
             # If it is the first step, grow the branches by the hard-coded initial dl
             self.tip_loc += dl * np.array([np.cos(self.theta), np.sin(self.theta)])
 
-        location = np.unravel_index(np.argmin((self.colony.sim.XX - self.tip_loc[0])**2 + (self.colony.sim.YY - self.tip_loc[1])**2), self.colony.sim.dims)
         if self.Winterp_bool:
-            self.width = np.interp(N[location], self.colony.Winterp[0], self.colony.Winterp[1])
+            self.width = self.colony.Winterp.ev(self.tip_loc[0], self.tip_loc[1])
 
         if self.Dinterp_bool:
-            self.density = np.interp(N[location], self.colony.Dinterp[0], self.colony.Dinterp[1])
+            self.density = self.colony.Dinterp.ev(self.tip_loc[0], self.tip_loc[1])
             self.crit_R = 1.5/self.density
 
         return terminate
     
-    def fill_diffuse(self):
+    def fill(self):
 
         # Lastly fill the width of the branches of the simulations. This is just done by setting all the points within a width/2
         # radius of the tips to 1, indicating they are filled with biofilms.
         d = np.sqrt( (self.colony.sim.XX-self.tip_loc[0])**2 + (self.colony.sim.YY-self.tip_loc[1])**2 )
         self.P[d <= self.width/2] = 1
+        self.colony.P[self.P == 1] == 1
 
 class colony:
 
-    def __init__(self, sim, inoc, c0, r0, ntips0, width, density, gamma, bN, aC, KN, Cm, Winterp, Dinterp):
+    def __init__(self, sim, inoc, c0, r0, ntips0, gamma, bN, aC, KN, Cm, Winterp, Dinterp):
         # -------------------------- Initialize colony variables ------------------------------
 
         # assign initial condition variables to the colony
         self.inoc = inoc # starting position
         self.c0 = c0 # starting cell number
         self.r0 = r0 # radius of colony initially
-        self.width = width # branch width
-        self.density = density
-        self.crit_R = 1.5 / self.density # distance from other branches at which bifurcation occurs
         self.gamma = gamma # colony expansion efficiency constant
         self.bN = bN # uptake rate of nutrients
         self.aC = aC # energy translation efficiency
@@ -137,16 +133,16 @@ class colony:
         self.Cm = Cm # half saturation for cell density in monod model
         self.sim = sim # the simulation in which the colony is situated
         Wmat = np.interp(self.sim.N, Winterp[0], Winterp[1])
-        self.Winterp = sint.RectBivariateSpline(self.sim.x, self.sim.y, Wmat)
+        self.Winterp = sint.RectBivariateSpline(self.sim.x, self.sim.y, Wmat.T)
         Dmat = np.interp(self.sim.N, Dinterp[0], Dinterp[1])
-        self.Dinterp = sint.RectBivariateSpline(self.sim.x, self.sim.y, Dmat)
+        self.Dinterp = sint.RectBivariateSpline(self.sim.x, self.sim.y, Dmat.T)
 
         # initialize the position and cell mass grid 
         self.P = np.zeros(self.sim.dims)
         self.C = np.zeros(self.sim.dims)
         self.RR = np.sqrt((self.sim.XX - self.inoc[0])**2 + (self.sim.YY - self.inoc[1])**2)
         self.P[self.RR < self.r0] = 1 # start with a circular mass of cells
-        self.C[self.P == 1] = self.c0/( np.sum(self.P) * self.sim.dims[0] * self.sim.dims[1]) # set cell density in this circular mass
+        self.C[self.P == 1] = self.c0/( np.sum(self.P) * self.sim.d[0] * self.sim.d[1]) # set cell density in this circular mass
         
         if ntips0 == None:
             ntips0 = np.round(2 * np.pi * self.r0 * self.density) # Calculate the total initial number of tips in the system
@@ -163,10 +159,13 @@ class colony:
         self.biomass = self.c0*self.sim.d[0]*self.sim.d[1]/(self.sim.dims[0]*self.sim.dims[1])
 
         # initialize the correct number of branch objects
-        initial_tips = np.array([r0*np.cos(self.theta), r0*np.sin(self.theta)]).T
+        initial_tips = np.array([r0*np.cos(self.theta), r0*np.sin(self.theta)])
+        widths = self.Winterp.ev(initial_tips[0], initial_tips[1])
+        densities = self.Dinterp.ev(initial_tips[0], initial_tips[1])
         self.branches = []
         for i in range(ntips0):
-            self.branches.append(branch(self, self.width, self.inoc, self.density, self.theta[i], self.P))
+            self.branches.append(branch(self, widths[i], self.inoc, densities[i], self.theta[i], self.P))
+            self.branches[i].C = self.C/ntips0
 
         # store the number of tips in a variable that can be referenced elsewhere
         self.ntips = ntips0
@@ -228,9 +227,9 @@ class colony:
                 new_theta = new_branch_list[k].theta + 0.5*np.pi
                 new_tip_loc = new_branch_list[k].tip_loc + dl_list[k] * np.array([np.cos(new_theta), np.sin(new_theta)])
                 new_branches.append(branch(self,
-                                            new_branch_list[k].width,
+                                            self.Winterp.ev(new_tip_loc[0], new_tip_loc[1]),
                                             new_tip_loc,
-                                            new_branch_list[k].density,
+                                            self.Dinterp.ev(new_tip_loc[0], new_tip_loc[1]),
                                             new_theta,
                                             new_branch_list[k].P))
                 
@@ -241,17 +240,21 @@ class colony:
                 
                 update_theta = new_branch_list[k].theta - 0.5*np.pi
                 new_branch_list[k].tip_loc += dl_list[k] * np.array([np.cos(update_theta), np.sin(update_theta)])
+                new_branch_list[k].theta = update_theta
 
         new_branch_list += new_branches
         self.ntips += len(new_branches)
         
         return new_branch_list
 
-    def update_C(self):
+    def update_C(self, dCdt):
         # ------------------------------------ Update C from the branch cell concentration ------------------------------
         self.P = np.array(np.sum(list(b.P for b in self.branches), axis = 0), dtype = bool)
+        self.C += dCdt
+        self.C[self.P] = np.sum(self.C)/np.sum(self.P)
 
-        self.C[self.P] = np.sum(list(b.C for b in self.branches))/np.sum(self.P)
+    def diffuse(self):
+        self.C[self.P == 1] = np.sum(self.C)/np.sum(self.P)
 
 class simulation:
 
@@ -334,12 +337,10 @@ class simulation:
 
     def add_colony(self, inoc = (0, 0), c0 = 2000.0, r0 = 5.0, ntips0 = None, width = 2.0, density = 0.2, gamma = 7.5, bN = 160, aC = 1.2, KN = 0.8, Cm = 0.05, Winterp = None, Dinterp = None):
         # ---------------------------------------- Add a colony to the simulation ----------------------------------------
-
+        self.w_data = Winterp
+        self.d_data = Dinterp
         # set up a colony object and add spaces to the storage lists for the biomass and the pattern
-        
-        init_dens_range = (self.XX - inoc[0])**2 + (self.YY - inoc[1])**2 < (r0)**2
-        density = np.interp(np.average(self.N[init_dens_range]), Dinterp[0], Dinterp[1])
-        self.colonies.append(colony(self, inoc, c0, r0, ntips0, width, density, gamma, bN, aC, KN, Cm, Winterp, Dinterp))
+        self.colonies.append(colony(self, inoc, c0, r0, ntips0, gamma, bN, aC, KN, Cm, Winterp, Dinterp))
         self.biomass_store.append([])
         self.pattern_store.append([])
 
@@ -360,7 +361,7 @@ class simulation:
             N_update_i, dCdt_i = self.colonies[i].inc_biomass()
             N_update += N_update_i
             self.dCdt_arr[i] += self.colonies[i].update_branch_biomass(dCdt_i)
-            self.colonies[i].update_C()
+            self.colonies[i].update_C(dCdt_i)
         
         # Add this complete update matrix to the nutrient grid
         self.N = self.N + N_update
@@ -385,7 +386,12 @@ class simulation:
             # 4. Diffuse nutrient across the grid 
             # 5. Store the biomass and the pattern of the colony in their storage lists
             for i in range(len(self.colonies)):
-            
+
+                Wmat = np.interp(self.N, self.w_data[0], self.w_data[1])
+                self.colonies[i].Winterp = sint.RectBivariateSpline(self.x, self.y, Wmat.T)
+                Dmat = np.interp(self.N, self.d_data[0], self.d_data[1])
+                self.colonies[i].Dinterp = sint.RectBivariateSpline(self.x, self.y, Dmat.T)
+
                 dl_list = []
                 for k in range(len(self.colonies[i].branches)):
                     dl_list.append(self.colonies[i].branches[k].update_dl(first_timestep = first, dCdt_branch = self.dCdt_arr[i][k]))
@@ -406,8 +412,8 @@ class simulation:
                 self.colonies[i].branches = new_branches
 
                 for k in range(len(self.colonies[i].branches)):
-                    self.colonies[i].branches[k].fill_diffuse()
-                self.colonies[i].update_C()
+                    self.colonies[i].branches[k].fill()
+                self.colonies[i].diffuse()
 
                 # Store patterns throughout simulation to generate one final gif
                 self.biomass_store[i].append( self.colonies[i].C.copy() )
@@ -416,7 +422,6 @@ class simulation:
             # store the nutrient matrix at each timestep
             self.nutrient_store.append( self.N.copy() )
 
-        if extend:
             self.dCdt_arr = list(np.zeros((len(self.colonies[i].branches), *self.dims)) for i in range(len(self.colonies)))
 
         return end_sim
@@ -474,10 +479,23 @@ if __name__ == "__main__":
     f2 = sio.loadmat('./NNdata/Parameters_multiseeding.mat')
     Dinterp = (f['mapping_N'][0], f['mapping_optimD'][0])
     Winterp = (f['mapping_N'][0], f['mapping_optimW'][0])
+    for key in f.keys():
+        print('{}: {}'.format(key, f[key]))
+    for key in f2.keys():
+        print('{}: {}'.format(key, f2[key]))
 
-    master_sim = simulation(N0 = np.broadcast_to(np.linspace(6, 18, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = f['DN'], L = 90, totalT = 17.6)
-    # master_sim.add_colony(inoc = (15, 0), Winterp = Winterp, Dinterp = Dinterp, Cm = f['Cm'][0,0])
-    # master_sim.add_colony(inoc = (-15, 0), Winterp = Winterp, Dinterp = Dinterp)
-    master_sim.add_colony(c0 = 1.6, ntips0 = 8, Winterp = Winterp, Dinterp = Dinterp, Cm = f['Cm'][0,0], bN = f['bN'][0,0], gamma = f['gama'][0,0], aC = f['aC'][0,0], KN = f['KN'][0,0])
-    master_sim.run_sim()
-    master_sim.animate_and_show()
+    # master_sim = simulation(N0 = np.broadcast_to(np.linspace(4, 20, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = f['DN'], L = 90, totalT = 17.6)
+    # inoc_list = [(0, 0)]
+    # for inoc in inoc_list:
+    #     master_sim.add_colony(c0 = 1.6,
+    #                         ntips0 = 8,
+    #                         inoc = inoc,
+    #                         Winterp = Winterp,
+    #                         Dinterp = Dinterp,
+    #                         Cm = f['Cm'][0,0],
+    #                         bN = f['bN'][0,0],
+    #                         gamma = f['gama'][0,0],
+    #                         aC = f['aC'][0,0],
+    #                         KN = f['KN'][0,0])
+    # master_sim.run_sim()
+    # master_sim.animate_and_show()
