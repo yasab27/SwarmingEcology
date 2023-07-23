@@ -210,12 +210,10 @@ class colony:
         new_branches = []
 
         # Now we iterate through each individual branch in our system and bifurcate our new branch IF the density criterion is met
-        for k in range(len(new_branch_list)): 
-            # Create a variable to store the locations of the tips
-            branchtips = np.array(list(m.tip_loc for m in new_branch_list))
+        for k in range(len(new_branch_list)):
             
             # Compute the distance of the current tip to all other tips in the system
-            dist_sq = np.linalg.norm(branchtips - np.tile(new_branch_list[k].tip_loc, (self.ntips, 1)), axis = 1)
+            dist_sq = np.linalg.norm(np.array(self.sim.branchtips) - np.tile(new_branch_list[k].tip_loc, (len(self.sim.branchtips), 1)), axis = 1)
             
             # Sort the distances
             dist_sq = np.sort(dist_sq)
@@ -287,7 +285,7 @@ class simulation:
         self.branching_times = []
         self.bifurcation_times = []
 
-
+        self.branchtips = []
 
         def diff(dx, dy, nx, ny, dt, D):
             # --------------------------------- Maths governing nutrient diffusion -------------------------------
@@ -343,6 +341,8 @@ class simulation:
         self.colonies.append(colony(self, inoc, c0, r0, ntips0, gamma, bN, aC, KN, Cm, Winterp, Dinterp))
         self.biomass_store.append([])
         self.pattern_store.append([])
+        for b in self.colonies[-1].branches:
+            self.branchtips.append(b.tip_loc)
 
     def timestep(self, first = False, extend = False):
         # -------------------------------------- Step forward in time by the timestep ------------------------------------
@@ -387,11 +387,6 @@ class simulation:
             # 5. Store the biomass and the pattern of the colony in their storage lists
             for i in range(len(self.colonies)):
 
-                Wmat = np.interp(self.N, self.w_data[0], self.w_data[1])
-                self.colonies[i].Winterp = sint.RectBivariateSpline(self.x, self.y, Wmat.T)
-                Dmat = np.interp(self.N, self.d_data[0], self.d_data[1])
-                self.colonies[i].Dinterp = sint.RectBivariateSpline(self.x, self.y, Dmat.T)
-
                 dl_list = []
                 for k in range(len(self.colonies[i].branches)):
                     dl_list.append(self.colonies[i].branches[k].update_dl(first_timestep = first, dCdt_branch = self.dCdt_arr[i][k]))
@@ -423,6 +418,11 @@ class simulation:
             self.nutrient_store.append( self.N.copy() )
 
             self.dCdt_arr = list(np.zeros((len(self.colonies[i].branches), *self.dims)) for i in range(len(self.colonies)))
+
+        self.branchtips = []
+        for c in self.colonies:
+            for b in c.branches:
+                self.branchtips.append(b.tip_loc)
 
         return end_sim
 
@@ -479,23 +479,20 @@ if __name__ == "__main__":
     f2 = sio.loadmat('./NNdata/Parameters_multiseeding.mat')
     Dinterp = (f['mapping_N'][0], f['mapping_optimD'][0])
     Winterp = (f['mapping_N'][0], f['mapping_optimW'][0])
-    for key in f.keys():
-        print('{}: {}'.format(key, f[key]))
-    for key in f2.keys():
-        print('{}: {}'.format(key, f2[key]))
 
-    # master_sim = simulation(N0 = np.broadcast_to(np.linspace(4, 20, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = f['DN'], L = 90, totalT = 17.6)
-    # inoc_list = [(0, 0)]
-    # for inoc in inoc_list:
-    #     master_sim.add_colony(c0 = 1.6,
-    #                         ntips0 = 8,
-    #                         inoc = inoc,
-    #                         Winterp = Winterp,
-    #                         Dinterp = Dinterp,
-    #                         Cm = f['Cm'][0,0],
-    #                         bN = f['bN'][0,0],
-    #                         gamma = f['gama'][0,0],
-    #                         aC = f['aC'][0,0],
-    #                         KN = f['KN'][0,0])
-    # master_sim.run_sim()
-    # master_sim.animate_and_show()
+    master_sim = simulation(N0 = np.broadcast_to(np.linspace(12, 12, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = f['DN'], L = 90, totalT = 17.6)
+    inoc_list = [(-17/4, 17/2*np.sin(4*np.pi/3)), (-17/4, 17/2*np.sin(2*np.pi/3)), (17/2, 0)]
+    ntips_list = [6, 6, 6]
+    for i in range(len(inoc_list)):
+        master_sim.add_colony(c0 = 1.6,
+                            ntips0 = ntips_list[i],
+                            inoc = inoc_list[i],
+                            Winterp = Winterp,
+                            Dinterp = Dinterp,
+                            Cm = f['Cm'][0,0],
+                            bN = f['bN'][0,0],
+                            gamma = f['gama'][0,0],
+                            aC = f['aC'][0,0],
+                            KN = f['KN'][0,0])
+    master_sim.run_sim()
+    master_sim.animate_and_show()
