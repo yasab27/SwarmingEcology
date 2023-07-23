@@ -119,7 +119,7 @@ class branch:
 
 class colony:
 
-    def __init__(self, sim, inoc, c0, r0, ntips0, gamma, bN, aC, KN, Cm, Winterp, Dinterp):
+    def __init__(self, sim, inoc, c0, r0, ntips0, gamma, bN, aC, KN, Cm, Winterp, Dinterp, gC = 0.2, kC = -1):
         # -------------------------- Initialize colony variables ------------------------------
 
         # assign initial condition variables to the colony
@@ -132,6 +132,8 @@ class colony:
         self.KN = KN # half saturation for nutrient uptake kinetics
         self.Cm = Cm # half saturation for cell density in monod model
         self.sim = sim # the simulation in which the colony is situated
+        self.gC = gC
+        self.kC = kC
         Wmat = np.interp(self.sim.N, Winterp[0], Winterp[1])
         self.Winterp = sint.RectBivariateSpline(self.sim.x, self.sim.y, Wmat.T)
         Dmat = np.interp(self.sim.N, Dinterp[0], Dinterp[1])
@@ -170,7 +172,7 @@ class colony:
         # store the number of tips in a variable that can be referenced elsewhere
         self.ntips = ntips0
 
-    def inc_biomass(self):
+    def inc_biomass_tox(self, other_tox):
         # ------------------------------- Handle nutrient uptake into the biomass ----------------------------
 
         # Compute fN(x,y) across the entire 2D field. 
@@ -180,10 +182,13 @@ class colony:
         dN = -self.bN*fN
         
         # Now treat the gain in cell density, this is just an ODE solved via first order Euler explicit. 
-        dC = self.aC * fN
+        dC = (1 - self.gC) * self.aC * fN + self.kC * other_tox * self.C
+
+        # part of the uptaken nutrient goes towards antibiotic production
+        dTox = self.gC * self.aC * fN
 
         # return only the change so multiple colonies can be updated in the same timestep
-        return dN*self.sim.dt, dC*self.sim.dt
+        return dN*self.sim.dt, dC*self.sim.dt, dTox*self.sim.dt
     
     def update_branch_biomass(self, dCdt):
         # ------------------------------------- Distribute uptaken biomass across all the branches ------------------------------
@@ -254,6 +259,7 @@ class colony:
     def diffuse(self):
         self.C[self.P == 1] = np.sum(self.C)/np.sum(self.P)
 
+
 class simulation:
 
     def __init__(self, N0, dims, dt, DN, L, totalT):
@@ -261,6 +267,7 @@ class simulation:
 
         self.N0 = N0 # initial nutrient concentration
         self.N = np.zeros(dims) + self.N0 # initial nutrient matrix
+        self.Tox = []
         self.dims = np.array(dims) # resolution of the environment
         self.L = L # size of the environment
         self.d = self.L/(self.dims-1) # small space step
@@ -326,14 +333,16 @@ class simulation:
         # use the above to assign the matrices needed to calculate diffusion of nutrients
         self.V1, self.V2, self.U1, self.U2 = diff(*self.d, *self.dims, self.dt, self.DN)
 
-    def diffuse_nutrients(self):
+    def diffuse_substance(self, matrix):
         # -------------------------------------- Diffuse the nutrients -----------------------------------------
 
         # Simulate the diffusion of nutrient in space via approximate CN scheme. Recall @ defines matrix-matrix multiplication. 
-        Nstar = sp.linalg.spsolve(self.V1, self.N @ self.U1)
-        self.N = sp.linalg.spsolve(self.U2.T, (self.V2 @ Nstar).T).T
+        matrix_star = sp.linalg.spsolve(self.V1, matrix @ self.U1)
+        matrix = sp.linalg.spsolve(self.U2.T, (self.V2 @ matrix_star).T).T
 
-    def add_colony(self, inoc = (0, 0), c0 = 2000.0, r0 = 5.0, ntips0 = None, width = 2.0, density = 0.2, gamma = 7.5, bN = 160, aC = 1.2, KN = 0.8, Cm = 0.05, Winterp = None, Dinterp = None):
+        return matrix
+
+    def add_colony(self, inoc = (0, 0), c0 = 2000.0, r0 = 5.0, ntips0 = None, gamma = 7.5, bN = 160, aC = 1.2, KN = 0.8, Cm = 0.05, Winterp = None, Dinterp = None):
         # ---------------------------------------- Add a colony to the simulation ----------------------------------------
         self.w_data = Winterp
         self.d_data = Dinterp
@@ -343,6 +352,7 @@ class simulation:
         self.pattern_store.append([])
         for b in self.colonies[-1].branches:
             self.branchtips.append(b.tip_loc)
+        self.Tox.append(np.zeros(self.dims))
 
     def timestep(self, first = False, extend = False):
         # -------------------------------------- Step forward in time by the timestep ------------------------------------
@@ -358,17 +368,21 @@ class simulation:
         if first:
             self.dCdt_arr = list(np.zeros((len(self.colonies[i].branches), *self.dims)) for i in range(len(self.colonies)))
         for i in range(len(self.colonies)):
-            N_update_i, dCdt_i = self.colonies[i].inc_biomass()
+            N_update_i, dCdt_i, Tox_update_i = self.colonies[i].inc_biomass_tox(np.sum(self.Tox, axis = 0) - self.Tox[i])
             N_update += N_update_i
             self.dCdt_arr[i] += self.colonies[i].update_branch_biomass(dCdt_i)
             self.colonies[i].update_C(dCdt_i)
+        for i in range(len(self.colonies)):
+            self.Tox[i] += Tox_update_i
         
         # Add this complete update matrix to the nutrient grid
         self.N = self.N + N_update
         self.N = np.max((self.N, np.zeros(self.dims)), axis = 0)
 
         # diffuse nutrients across the grid according to the diffusion model
-        self.diffuse_nutrients()
+        self.N = self.diffuse_substance(self.N)
+        for i in range(len(self.colonies)):
+            self.Tox[i] = self.diffuse_substance(self.Tox[i])
 
         end = time.time()
 
@@ -462,7 +476,7 @@ class simulation:
         time_series_data = list([] for i in range(0, len(self.pattern_store), 3))
         for i in range(0,len(self.pattern_store),3):
             
-            time_series_data[int(i/3)] += [ax1.imshow(self.pattern_store[i], cmap = "viridis"), 
+            time_series_data[int(i/3)] += [ax1.imshow(self.pattern_store[i], cmap = "viridis"),
                                     ax2.imshow(self.nutrient_store[i],vmin = 0),
                                     ax3.plot( self.nutrient_store[i][500],)[0],
                                     ax4.plot( range(i) , self.total_masses[0:i] )[0]]
@@ -481,8 +495,8 @@ if __name__ == "__main__":
     Winterp = (f['mapping_N'][0], f['mapping_optimW'][0])
 
     master_sim = simulation(N0 = np.broadcast_to(np.linspace(12, 12, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = f['DN'], L = 90, totalT = 17.6)
-    inoc_list = [(-17/4, 17/2*np.sin(4*np.pi/3)), (-17/4, 17/2*np.sin(2*np.pi/3)), (17/2, 0)]
-    ntips_list = [6, 6, 6]
+    inoc_list = [(-17/2, 0), (17/2, 0)]
+    ntips_list = [6, 6]
     for i in range(len(inoc_list)):
         master_sim.add_colony(c0 = 1.6,
                             ntips0 = ntips_list[i],
