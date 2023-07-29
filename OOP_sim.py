@@ -76,7 +76,7 @@ class branch:
             
             # Now we interpolate the value of the nutrient concentration at each of these points. We do this by first fitting a bivariate
             # spline to the current nutrient concentration and then interpolating at our points of interests. 
-            interp = sint.RectBivariateSpline(self.colony.sim.XX[0, :], self.colony.sim.YY[:, 0], N.T)
+            interp = sint.RectBivariateSpline(self.colony.sim.XX[0, :], self.colony.sim.YY[:, 0], (N - np.sum(self.colony.sim.Tox, axis = 0) + self.colony.Tox).T)
             
             # Evaluate at desired points
             N_int = interp.ev(candidates[0], candidates[1])
@@ -133,7 +133,10 @@ class colony:
         self.Cm = Cm # half saturation for cell density in monod model
         self.sim = sim # the simulation in which the colony is situated
         self.gC = gC
+        self.gC = 0 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         self.kC = kC
+        self.kC = 0 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        self.Tox = np.zeros(self.sim.dims)
         Wmat = np.interp(self.sim.N, Winterp[0], Winterp[1])
         self.Winterp = sint.RectBivariateSpline(self.sim.x, self.sim.y, Wmat.T)
         Dmat = np.interp(self.sim.N, Dinterp[0], Dinterp[1])
@@ -374,6 +377,7 @@ class simulation:
             self.colonies[i].update_C(dCdt_i)
         for i in range(len(self.colonies)):
             self.Tox[i] += Tox_update_i
+            self.colonies[i].Tox = self.Tox[i]
         
         # Add this complete update matrix to the nutrient grid
         self.N = self.N + N_update
@@ -489,14 +493,14 @@ if __name__ == "__main__":
 
     np.seterr(divide = 'ignore')
     
-    f = sio.loadmat('./NNdata/Parameters_gradient_Figure5.mat')
-    f2 = sio.loadmat('./NNdata/Parameters_multiseeding.mat')
+    f2 = sio.loadmat('./NNdata/Parameters_gradient_Figure5.mat')
+    f = sio.loadmat('./NNdata/Parameters_multiseeding.mat')
     Dinterp = (f['mapping_N'][0], f['mapping_optimD'][0])
     Winterp = (f['mapping_N'][0], f['mapping_optimW'][0])
 
     master_sim = simulation(N0 = np.broadcast_to(np.linspace(12, 12, 1001), (1001, 1001)), dims = (1001, 1001), dt = 0.02, DN = f['DN'], L = 90, totalT = 17.6)
     inoc_list = [(-17/2, 0), (17/2, 0)]
-    ntips_list = [6, 6]
+    ntips_list = [5, 5]
     for i in range(len(inoc_list)):
         master_sim.add_colony(c0 = 1.6,
                             ntips0 = ntips_list[i],
