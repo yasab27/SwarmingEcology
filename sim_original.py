@@ -70,7 +70,7 @@ def main(config): # input seeding configuration
 
     # ------------------------ Seeding configurations -------------------------
     match config:
-        case 1: x0 = 0; y0 = 0 # one dot
+        case 1: x0 = np.array((0,)); y0 = np.array((0,)) # one dot
         case 2: x0 = 17/2 * np.array([-1, 1]); y0 = np.array([0, 0]) # two dots side by side
         case 3: x0 = 38/2 * np.array([-1, 1]); y0 = np.array([0, 0]) # two dots side by side
         case 4: x0 = 19 * np.array([-1, 0, 1]); y0 = np.array([0, 0, 0]) # three dots side by side
@@ -307,10 +307,9 @@ if __name__ == '__main__':
 
         if save:
             plt.savefig('config_{}.png'.format(config))
-            
+
         plt.show()
         
-
     else:
 
         total_masses = np.sum(biomass_store, axis = (1,2))
