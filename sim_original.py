@@ -4,9 +4,11 @@ import scipy.sparse as sp
 import scipy.io as sio
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
 from matplotlib import animation
+import time
 
-def main(config): # input seeding configuration
+def main(config, chem): # input seeding configuration
 
     def diff(dx, dy, nx, ny, dt, D):
         # --------------------------------- Maths governing nutrient diffusion -------------------------------
@@ -19,7 +21,7 @@ def main(config): # input seeding configuration
         Ix = np.eye(nx)
         Iy = np.eye(ny)
 
-        P = Ix * -2
+        P1 = Ix * -2
         P2 = np.eye(nx, k = 1)
         P3 = np.eye(nx, k = -1)
 
@@ -27,7 +29,7 @@ def main(config): # input seeding configuration
         Q2 = np.eye(ny, k = 1)
         Q3 = np.eye(ny, k = -1)
 
-        Mx = P + P2 + P3
+        Mx = P1 + P2 + P3
         My = Q + Q2 + Q3
 
         # Impose no flux boundary conditions for the system
@@ -44,30 +46,34 @@ def main(config): # input seeding configuration
         
         return V1, V2, U1, U2
 
-    f = sio.loadmat('./NNdata/Parameters_multiseeding.mat') # select parameter file
     DN = 5.74856944
-    DT = 5.74856944
+    DT = 5.74856944*10
     KN = 0.6634879
     KT = 0.6634879
     Cm = 0.07888089
     bN = 195.48320435
     aC = 1.1050198
     gama = 4
-    gC = 0
-    bT = 1500
+    bT = 900
     aT = 1
-    N_c = 0.5
+    T_c = 1
     cT = 100
     chemEffect = -1
+    if not chem:
+        chemEffect = 0
+    N0s = np.array((8.5, 14.5, 16.5))
+    mapping_N = np.array([4, 8, 12, 16, 20])
+    mapping_optimW = np.array((1.5, 2, 2.5, 10, 11.11111111))
+    mapping_optimD = np.array((0.08, 0.13, 0.17, 0.08, 0.07))
 
     ld = sio.loadmat('./NNdata/DUKE.mat')
     NutrientLevel = 1 # select nutrient level: 0-low, 1-medium, 2-high
 
     # Obtain optimal W & D from the mapping
-    N0      = f['N0s'][0, NutrientLevel]
-    Width   = np.interp(N0, f['mapping_N'][0], f['mapping_optimW'][0])
-    Density = np.interp(N0, f['mapping_N'][0], f['mapping_optimD'][0])
-
+    N0      = N0s[NutrientLevel]
+    Width   = np.interp(N0, mapping_N, mapping_optimW)
+    Density = np.interp(N0, mapping_N, mapping_optimD)
+    
     # ------------------------ Seeding configurations -------------------------
     match config:
         case 1: x0 = np.array((0,)); y0 = np.array((0,)) # one dot
@@ -91,6 +97,7 @@ def main(config): # input seeding configuration
         case 13: Pattern = ld['U']
         case 14: Pattern = ld['K']
         case 15: Pattern = ld['E']
+        case _: x0 = None; Pattern = None
 
 
     if config >= 12 and config <= 15:
@@ -122,10 +129,13 @@ def main(config): # input seeding configuration
     nseeding = x0.shape[0]
 
     # Initialization
-    P = np.zeros(dims)      # Pattern
     C = np.zeros(dims)      # Cell density
     N = np.zeros(dims) + N0
     Tox = np.zeros((nseeding, *dims))
+    if chem:
+        gC = np.zeros((*dims, nseeding))
+    else:
+        gC = 0
     r0 = 5    # initial radius 
     C0 = 1.6
 
@@ -139,29 +149,31 @@ def main(config): # input seeding configuration
     boundarylengths = np.zeros((nseeding,))
     for iseed in range(nseeding):
         boundarylengths[iseed] = seglength * colonyarray[iseed].shape[1]
+
     # ------------------------------------------------------------------------
 
-    ntips0 = np.ceil(boundarylengths * Density) # initial branch number
+    ntips0 = np.ceil(boundarylengths * Density * 2) # initial branch number
     ntips0 = np.array(ntips0, dtype = int)
     ColonyDomain = np.zeros((*dims, nseeding), dtype = int) # the domain covered by each colony
     BranchColonyID = np.concatenate((list(i * np.ones((ntips0[i],), dtype = int) for i in range(nseeding))))
 
+    Width = np.tile(Width, np.sum(ntips0))
+    Density = np.tile(Density, np.sum(ntips0))
     rr = np.zeros((*dims, nseeding))
     theta = []; Tipx = []; Tipy = []
     for iseed in range(nseeding):
 
         rr[:,:,iseed] = np.sqrt((xx - x0[iseed]) ** 2 + (yy - y0[iseed]) ** 2)
-        ColonyDomain[:, :, iseed] = (rr[:, :, iseed] < r0)
+        ColonyDomain[:, :, iseed] = (rr[:, :, iseed] <= r0)
 
         Tipxi = np.ones((ntips0[iseed],)) * x0[iseed];  Tipx = np.concatenate((Tipx, Tipxi)) # x coordinates of every tip
         Tipyi = np.ones((ntips0[iseed],)) * y0[iseed];  Tipy = np.concatenate((Tipy, Tipyi)) # y coordinates of every tip
         thetai = np.linspace(np.pi/2, 2 * np.pi+np.pi/2, ntips0[iseed] + 1) 
-        thetai = thetai[:ntips0[iseed]] + iseed /10 * np.pi # growth directions of every branch
-        theta = np.concatenate((theta, thetai))  
+        thetai = thetai[:-1] + iseed /50 * np.pi # growth directions of every branch
+        theta = np.concatenate((theta, thetai))
 
     rr = np.min(rr, axis = 2)
-    P[rr <= r0] = 1
-    C[P == 1] = C0 / (np.sum(P[:]) * d[0] * d[1]); C_pre = C
+    C[np.sum(ColonyDomain, axis = 2) == 1] = C0 / (np.sum(ColonyDomain) * d[0] * d[1]); C_pre = C
     Tox_pre = Tox
 
     ntips0 = np.sum(ntips0)
@@ -169,7 +181,6 @@ def main(config): # input seeding configuration
     BranchDomain = np.zeros((*dims, ntips0), dtype = int) # the domain covered by each branch
     for k in range(ntips0): BranchDomain[:, :, k] = ColonyDomain[:, :, BranchColonyID[k]]
 
-    Biomass = np.sum(C) * (d[0] * d[1])
     delta = np.linspace(-1, 1, 201) * np.pi
     MatV1N, MatV2N, MatU1N, MatU2N = diff(*d, *dims, dt, DN)
     MatV1T, MatV2T, MatU1T, MatU2T = diff(*d, *dims, dt, DT)
@@ -190,20 +201,21 @@ def main(config): # input seeding configuration
         NV = sp.linalg.spsolve(MatV1N, N @ MatU1N); N = sp.linalg.spsolve(MatU2N.T, (MatV2N @ NV).T).T
         dC = aC * fN * (1 - gC)
 
-        dTox = np.zeros((nseeding, *dims))
-        for j in range(nseeding):
-            fNi = fN * ColonyDomain[:, :, j]
-            fTother = Tox[~(np.arange(nseeding) == j)] / (Tox[~(np.arange(nseeding) == j)] + KT) * Cm / (np.tile(C, (nseeding - 1, 1, 1)) + Cm) * np.tile(C, (nseeding - 1, 1, 1))
-            dTox[j] = dTox[j] + bT * fNi * gC
-            dTox[~(np.arange(nseeding) == j)] += - cT * fTother
-            dC += ColonyDomain[:, :, j] * np.sum(fTother, axis = 0) * aT * chemEffect
-        
-        for j in range(nseeding):
-            Tox[j] = Tox[j] + dTox[j] * dt  
-            ToxiV = sp.linalg.spsolve(MatV1T, Tox[j] @ MatU1T); Tox[j] = sp.linalg.spsolve(MatU2T.T, (MatV2T @ ToxiV).T).T
+        if chem:
+
+            dTox = np.zeros((nseeding, *dims))
+
+            for j in range(nseeding):
+                fTother = Tox[~(np.arange(nseeding) == j)] / (Tox[~(np.arange(nseeding) == j)] + KT) * Cm / (np.tile(C, (nseeding - 1, 1, 1)) + Cm) * np.tile(C, (nseeding - 1, 1, 1))
+                dTox[j] = dTox[j] + bT * fN * ColonyDomain[:, :, j] * fTother.sum(0)
+                dTox[~(np.arange(nseeding) == j)] += - cT * fTother
+                dC += ColonyDomain[:, :, j] * (np.sum(fTother, axis = 0) * aT * chemEffect + aC * fN * (1 - fTother.sum(0)))
+            
+            for j in range(nseeding):
+                Tox[j] = Tox[j] + dTox[j] * dt  
+                ToxiV = sp.linalg.spsolve(MatV1T, Tox[j] @ MatU1T); Tox[j] = sp.linalg.spsolve(MatU2T.T, (MatV2T @ ToxiV).T).T
         
         C  = C + dC * dt
-
 
         # -------------------------------------
         # Branch extension and bifurcation
@@ -221,18 +233,18 @@ def main(config): # input seeding configuration
                     branchfract = 1 / (BranchDomainSum * BranchDomain[:, :, k])
                 branchfract[np.isinf(branchfract)] = 0
                 dE[k] = np.sum(dBiomass * branchfract)        
-            # extension rate of each branch
-            dl = gama * dE / Width
-            if i == 0: dl = 0.5
+                # extension rate of each branch
+                dl = gama * dE / Width
+            if i == 0: dl = r0 - Width/2
 
             # Bifurcation
             R = 1.5 / Density  # a branch will bifurcate if there is no other branch tips within the radius of R
-            TipxNew = Tipx; TipyNew = Tipy; thetaNew = theta; dlNew = dl
+            TipxNew = Tipx; TipyNew = Tipy; thetaNew = theta; dlNew = dl; WidthNew = Width; DensityNew = Density
             BranchDomainNew = BranchDomain; BranchColonyIDNew = BranchColonyID
             for k in range(ntips):
                 dist2othertips = np.sqrt((TipxNew - Tipx[k]) ** 2 + (TipyNew - Tipy[k]) ** 2)
                 dist2othertips = np.sort(dist2othertips)
-                if dist2othertips[1] > R:
+                if dist2othertips[1] > R[k]:
                     TipxNew = np.append(TipxNew, Tipx[k] + dl[k] * np.sin(theta[k] + 0.5 * np.pi)) # splitting the old tip to two new tips
                     TipyNew = np.append(TipyNew, Tipy[k] + dl[k] * np.cos(theta[k] + 0.5 * np.pi)) 
                     TipxNew[k] = TipxNew[k] + dl[k] * np.sin(theta[k] - 0.5 * np.pi)
@@ -242,7 +254,9 @@ def main(config): # input seeding configuration
                     thetaNew = np.append(thetaNew, theta[k])
                     BranchDomainNew = np.append(BranchDomainNew, BranchDomain[:, :, k].reshape((*dims, 1)), axis = 2)
                     BranchColonyIDNew = np.append(BranchColonyIDNew, BranchColonyID[k])
-            Tipx = TipxNew; Tipy = TipyNew; theta = thetaNew; dl = dlNew
+                    WidthNew = np.append(WidthNew, Width[k])
+                    DensityNew = np.append(DensityNew, Density[k])
+            Tipx = TipxNew; Tipy = TipyNew; theta = thetaNew; dl = dlNew; Width = WidthNew; Density = DensityNew
             BranchDomain = BranchDomainNew; BranchColonyID = BranchColonyIDNew
 
             ntips = Tipx.shape[0]
@@ -256,15 +270,21 @@ def main(config): # input seeding configuration
                 TipxO = np.tile(Tipx, (delta.shape[0], 1)).T + np.tile(dl, (delta.shape[0], 1)).T * np.sin(thetaO)
                 TipyO = np.tile(Tipy, (delta.shape[0], 1)).T + np.tile(dl, (delta.shape[0], 1)).T * np.cos(thetaO)
                 DirMatO = np.zeros((ntips, delta.shape[0]))
-                for j in range(nseeding):
-                    DirMat = N_c * N + (1 - N_c) * chemEffect * np.sum(Tox[~(np.arange(nseeding) == j)], axis = 0)
-                    interp = sint.RectBivariateSpline(x, y, DirMat.T)
-                    DirMatO[BranchColonyID == j] = interp.ev(TipxO[BranchColonyID == j], TipyO[BranchColonyID == j])
+                if chem:
+                    for j in range(nseeding):
+                        DirMat = N + T_c * chemEffect * np.sum(Tox[~(np.arange(nseeding) == j)], axis = 0)
+                        interp = sint.RectBivariateSpline(x, y, DirMat.T)
+                        DirMatO[BranchColonyID == j] = interp.ev(TipxO[BranchColonyID == j], TipyO[BranchColonyID == j])
+                else:
+                    interp = sint.RectBivariateSpline(x, y, N.T)
+                    DirMatO = interp.ev(TipxO, TipyO)
                 ind = np.argmax(DirMatO, axis = 1) # find the direction with maximum nutrient
                 for k in range(ntips):
                     Tipx[k] = TipxO[k, ind[k]]
                     Tipy[k] = TipyO[k, ind[k]]
                     theta[k] = thetaO[k, ind[k]]
+                    Width[k] = np.interp(DirMatO[k, ind[k]], mapping_N, mapping_optimW)
+                    Density[k] = np.interp(DirMatO[k, ind[k]], mapping_N, mapping_optimD)
 
             # Growth stops when approaching edges
             ind = np.sqrt(Tipx ** 2 + Tipy ** 2) > 0.8 * L/2
@@ -274,43 +294,75 @@ def main(config): # input seeding configuration
             # Fill the width of the branches
             for k in range(ntips):
                 dist = np.sqrt((Tipx[k] - xx) ** 2 + (Tipy[k] - yy) ** 2)
-                P[dist <= Width/2] = 1
-                BranchDomain[:, :, k] = np.bitwise_or(BranchDomain[:, :, k], dist <= Width/2)
-                ColonyDomain[:, :, BranchColonyID[k]] = np.bitwise_or(ColonyDomain[:, :, BranchColonyID[k]], dist <= Width/2)
-            C[P == 1] = np.sum(C) / np.sum(P) # Make cell density uniform
+                BranchDomain[:, :, k] = np.bitwise_or(BranchDomain[:, :, k], dist <= Width[k]/2)
+                ColonyDomain[:, :, BranchColonyID[k]] = np.bitwise_or(ColonyDomain[:, :, BranchColonyID[k]], dist <= Width[k]/2)
+            ColonyDomainSum = np.sum(ColonyDomain, axis = 2)
+            for j in range(nseeding):
+                with np.errstate(divide = 'ignore'):
+                    colonyfract = 1 / (ColonyDomainSum * ColonyDomain[:, :, j])
+                colonyfract[np.isinf(colonyfract)] = 0
+                C[ColonyDomain[:, :, j] == 1] = np.sum(C * colonyfract)/np.sum(ColonyDomain[:, :, j]) # Make cell density uniform
+
             C_pre = C
 
             biomass_store.append( C.copy() )
-            pattern_store.append( P.copy() )
+            pattern_store.append( np.sum(ColonyDomain*(np.arange(nseeding) + 1), axis = 2) )
             nutrient_store.append( N.copy() )
-            toxin_store.append( Tox.copy() )
+            if chem:
+                toxin_store.append( Tox.copy() )
 
     return biomass_store, pattern_store, nutrient_store, toxin_store
 
 if __name__ == '__main__':
 
-    config = 1
-    only_show_pattern = True
-    save = True
+    colors = ['#a1dab4', '#886ac4', '#60a240', '#2a406b', '#341f14', '#000000'][::-1]
+    my_cmap = ListedColormap(colors, name="my_cmap")
 
-    biomass_store, pattern_store, nutrient_store, toxin_store = main(config)
+    only_show_pattern = True
 
     if only_show_pattern:
-        fig, ax = plt.subplots(1, 1)
-        ax.set_title('Pattern')
-        time_series_data = list([] for i in range(0, len(pattern_store), 3))
+        save = True
 
-        for i in range(0, len(pattern_store), 3):
-            time_series_data[int(i/3)] += [ax.imshow(pattern_store[i], cmap = 'viridis')]
+        chem = False
 
-        ani = animation.ArtistAnimation(fig, time_series_data, repeat = False)
+        # fig, axs = plt.subplots(2, 7, figsize = (21, 6))
+        # for i in range(14):
+        #     _, pattern_store, _, _ = main(i+2, chem)
+        #     axs[int(i/7), i % 7].imshow(pattern_store[-1], cmap = 'plasma')
+        #     axs[int(i/7), i % 7].set_title('Pattern {}'.format(i+1))
+
+        # if save:
+        #     plt.savefig('Fig_6.png')
+
+        config = 1
+
+        _, pattern_store, _, _ = main(config, chem)
+
+        fig, [ax1, ax2, ax3] = plt.subplots(1, 3)
+        fig.set_size_inches(9, 3)
+        ax1.set_title('t = 0')
+        ax2.set_title('t = 12')
+        ax3.set_title('t = 24')
+        ax1.imshow(pattern_store[0], cmap = my_cmap)
+        ax2.imshow(pattern_store[59], cmap = my_cmap)
+        ax3.imshow(pattern_store[119], cmap = my_cmap)
+        # time_series_data = list([] for i in range(0, len(pattern_store), 3))
+
+        # for i in range(0, len(pattern_store), 3):
+        #     time_series_data[int(i/3)] += [ax1.imshow(pattern_store[i], cmap = 'tab10')]
+
+        # ani = animation.ArtistAnimation(fig, time_series_data, repeat = False)
 
         if save:
-            plt.savefig('config_{}.png'.format(config))
+            plt.savefig('single_colony_growth_stages.png')
 
         plt.show()
         
     else:
+        save = False
+        chem = True      
+        config = 3
+        biomass_store, pattern_store, nutrient_store, toxin_store = main(config, chem)
 
         total_masses = np.sum(biomass_store, axis = (1,2))
         # set up and plot graphs
@@ -318,7 +370,7 @@ if __name__ == '__main__':
         ax1.set_title("Pattern")
         ax2.set_title("Nutrient Concentration")
         ax3.set_title("Nutrient Cross-section")
-        ax3.set_xlim(0, dims[0])
+        ax3.set_xlim(0, pattern_store[0].shape[0])
         ax3.set_ylim(0,np.max(nutrient_store[0]) + 2)
         ax3.set_aspect(np.diff(ax3.get_xlim())[0] / np.diff(ax3.get_ylim())[0])
         ax4.set_xlim( 0, len(pattern_store) )
@@ -332,12 +384,12 @@ if __name__ == '__main__':
         time_series_data = list([] for i in range(0, len(pattern_store), 3))
         for i in range(0,len(pattern_store),3):
             
-            time_series_data[int(i/3)] += [ax1.imshow(pattern_store[i], cmap = "viridis"),
+            time_series_data[int(i/3)] += [ax1.imshow(pattern_store[i], cmap = "tab10", vmin=0, vmax=3),
                                     ax2.imshow(nutrient_store[i],vmin = 0),
                                     ax3.plot( nutrient_store[i][500],)[0],
                                     ax4.plot( range(i) , total_masses[0:i] )[0],
-                                    ax5.imshow(toxin_store[i][0], cmap = 'plasma'),
-                                    ax6.imshow(toxin_store[i][1], cmap = 'autumn')]
+                                    ax5.imshow(toxin_store[i][0], cmap = 'magma'),
+                                    ax6.imshow(toxin_store[i][1], cmap = 'magma')]
 
         ani = animation.ArtistAnimation(fig, time_series_data, repeat = False)
 
